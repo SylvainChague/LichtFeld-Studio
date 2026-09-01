@@ -212,6 +212,7 @@ namespace lfs::io::project {
                 {"show_pivot", false},
                 {"split_view_mode", 0},
                 {"gt_comparison_mode", 0},
+                {"gt_comparison_actual_size", false},
                 {"split_position", 0.5},
                 {"split_view_offset", 0},
                 {"raster_backend", "3dgs"},

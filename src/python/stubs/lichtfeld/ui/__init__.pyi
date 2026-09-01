@@ -2229,6 +2229,15 @@ def get_gt_comparison_mode() -> str:
 def set_gt_comparison_mode(mode: str) -> None:
     """Set ground-truth comparison mode."""
 
+def get_gt_comparison_actual_size() -> bool:
+    """Return whether GT comparison 1:1 pixel mode is requested."""
+
+def set_gt_comparison_actual_size(enabled: bool) -> None:
+    """Enable or disable GT comparison 1:1 pixel mode."""
+
+def is_gt_comparison_actual_size_available() -> bool:
+    """Return whether the selected GT camera supports RGB perspective 1:1 pixel mode."""
+
 def cycle_gt_comparison_mode() -> str:
     """Cycle ground-truth comparison mode: rgb -> normal -> depth -> rgb."""
 

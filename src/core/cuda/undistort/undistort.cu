@@ -8,10 +8,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <limits>
 #include <nvtx3/nvToolsExt.h>
+#include <stdexcept>
 
 namespace lfs::core {
 
@@ -148,14 +150,25 @@ namespace lfs::core {
             }
         }
 
+        template <typename T>
+        __device__ float normalized_sample(const T value) {
+            return static_cast<float>(value);
+        }
+
+        template <>
+        __device__ float normalized_sample<std::uint8_t>(const std::uint8_t value) {
+            return static_cast<float>(value) / 255.0f;
+        }
+
+        template <typename T>
         __device__ float bilinear_sample(
-            const float* __restrict__ src,
+            const T* __restrict__ src,
             const int width, const int height, const int stride,
             const float sx, const float sy) {
 
             const auto get_pixel_constant_border = [&](const int y, const int x) {
                 if (x >= 0 && y >= 0 && x < width && y < height) {
-                    return src[y * stride + x];
+                    return normalized_sample(src[y * stride + x]);
                 }
                 return 0.0f;
             };
@@ -209,6 +222,49 @@ namespace lfs::core {
             for (int c = 0; c < channels; ++c) {
                 dst[c * dst_plane + oy * params.dst_width + ox] =
                     bilinear_sample(src + c * src_plane, params.src_width, params.src_height, params.src_width, sx, sy);
+            }
+        }
+
+        template <typename T>
+        __global__ void __launch_bounds__(BLOCK_DIM* BLOCK_DIM)
+            undistort_image_region_kernel(
+                const T* __restrict__ src,
+                float* __restrict__ dst,
+                const int channels,
+                const UndistortParams params,
+                const int destination_x,
+                const int destination_y,
+                const int region_width,
+                const int region_height) {
+
+            const int local_x = blockIdx.x * BLOCK_DIM + threadIdx.x;
+            const int local_y = blockIdx.y * BLOCK_DIM + threadIdx.y;
+            if (local_x >= region_width || local_y >= region_height)
+                return;
+
+            const int global_x = destination_x + local_x;
+            const int global_y = destination_y + local_y;
+            const float pixel_x = static_cast<float>(global_x) + PIXEL_CENTER_OFFSET;
+            const float pixel_y = static_cast<float>(global_y) + PIXEL_CENTER_OFFSET;
+            const float nx = (pixel_x - params.dst_cx) / params.dst_fx;
+            const float ny = (pixel_y - params.dst_cy) / params.dst_fy;
+
+            float dnx, dny;
+            apply_distortion(nx, ny, params.model_type, params.distortion, params.num_distortion, dnx, dny);
+
+            const float sx = dnx * params.src_fx + params.src_cx - PIXEL_CENTER_OFFSET;
+            const float sy = dny * params.src_fy + params.src_cy - PIXEL_CENTER_OFFSET;
+            const int src_plane = params.src_height * params.src_width;
+            const int dst_plane = region_height * region_width;
+            for (int c = 0; c < channels; ++c) {
+                dst[c * dst_plane + local_y * region_width + local_x] =
+                    bilinear_sample(
+                        src + c * src_plane,
+                        params.src_width,
+                        params.src_height,
+                        params.src_width,
+                        sx,
+                        sy);
             }
         }
 
@@ -813,6 +869,66 @@ namespace lfs::core {
 
         nvtxRangePop();
         return dst;
+    }
+
+    Tensor undistort_image_region(
+        const Tensor& source,
+        const UndistortParams& params,
+        const int destination_x,
+        const int destination_y,
+        const int width,
+        const int height,
+        cudaStream_t stream) {
+        if (!source.is_valid() || source.ndim() != 3 ||
+            source.device() != Device::CUDA || !source.is_contiguous()) {
+            throw std::invalid_argument(
+                "undistort_image_region requires a contiguous CUDA CHW tensor");
+        }
+        if (source.dtype() != DataType::UInt8 &&
+            source.dtype() != DataType::Float32) {
+            throw std::invalid_argument(
+                "undistort_image_region requires UInt8 or Float32 input");
+        }
+        if (static_cast<int>(source.shape()[1]) != params.src_height ||
+            static_cast<int>(source.shape()[2]) != params.src_width) {
+            throw std::invalid_argument(
+                "undistort_image_region source dimensions do not match its parameters");
+        }
+        if (destination_x < 0 || destination_y < 0 || width <= 0 || height <= 0 ||
+            static_cast<std::int64_t>(destination_x) + width > params.dst_width ||
+            static_cast<std::int64_t>(destination_y) + height > params.dst_height) {
+            throw std::invalid_argument(
+                "undistort_image_region destination region is outside the full output");
+        }
+
+        nvtxRangePush("undistort_image_region");
+        const int channels = static_cast<int>(source.shape()[0]);
+        auto destination = Tensor::zeros(
+            {static_cast<size_t>(channels),
+             static_cast<size_t>(height),
+             static_cast<size_t>(width)},
+            Device::CUDA,
+            DataType::Float32);
+        const dim3 block(BLOCK_DIM, BLOCK_DIM);
+        const dim3 grid(
+            (width + BLOCK_DIM - 1) / BLOCK_DIM,
+            (height + BLOCK_DIM - 1) / BLOCK_DIM);
+        if (source.dtype() == DataType::UInt8) {
+            undistort_image_region_kernel<<<grid, block, 0, stream>>>(
+                source.ptr<std::uint8_t>(), destination.ptr<float>(), channels, params,
+                destination_x, destination_y, width, height);
+        } else {
+            undistort_image_region_kernel<<<grid, block, 0, stream>>>(
+                source.ptr<float>(), destination.ptr<float>(), channels, params,
+                destination_x, destination_y, width, height);
+        }
+        const cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            nvtxRangePop();
+            throw std::runtime_error("undistort_image_region kernel launch failed");
+        }
+        nvtxRangePop();
+        return destination;
     }
 
     Tensor undistort_mask(const Tensor& src, const UndistortParams& params, cudaStream_t stream) {

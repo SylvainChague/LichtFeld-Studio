@@ -1162,6 +1162,7 @@
     "depth_view_tool": "Aktywny widok mapy głębi",
     "depth_view_mode": "Wybierz tryb koloru głębi",
     "gt_compare_mode": "Wybierz porównanie z referencją RGB, normalnych lub głębi",
+    "gt_compare_actual_size": "Wyświetl referencję RGB w skali jeden piksel obrazu na jeden fizyczny piksel ekranu. Niedostępne dla normalnych, głębi, brakujących obrazów oraz kamer ortograficznych lub equirektangularnych.",
     "depth_view_range": "Zakres wizualizacji głębi",
     "depth_view_near": "Bliska granica zakresu głębi",
     "depth_view_far": "Daleka granica zakresu głębi",

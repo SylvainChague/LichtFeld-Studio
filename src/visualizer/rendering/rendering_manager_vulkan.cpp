@@ -798,34 +798,51 @@ namespace lfs::vis {
                             panel.uv_scale,
                         clamp_max);
                     const std::size_t idx = static_cast<std::size_t>(y) * width + x;
-                    const auto sample_color = [&](const glm::vec2 sample_uv) {
-                        return glm::vec3{
-                            sample(std::get<0>(data), std::get<1>(data), std::get<2>(data),
-                                   sample_uv.x, sample_uv.y, 0),
-                            sample(std::get<0>(data), std::get<1>(data), std::get<2>(data),
-                                   sample_uv.x, sample_uv.y, 1),
-                            sample(std::get<0>(data), std::get<1>(data), std::get<2>(data),
-                                   sample_uv.x, sample_uv.y, 2)};
-                    };
-                    glm::vec3 color = sample_color(texture_uv);
-                    if (panel.spatial_filter) {
-                        constexpr float kSpatialSharpenStrength = 0.18f;
-                        const float texel_x = 1.0f / static_cast<float>(std::max(std::get<1>(data), 1));
-                        const float texel_y = 1.0f / static_cast<float>(std::max(std::get<2>(data), 1));
-                        const auto clamp_uv = [&clamp_max](const glm::vec2 uv) {
-                            return glm::clamp(uv, glm::vec2(0.0f), clamp_max);
+                    if (params.exact_texel_sampling) {
+                        const int panel_width = std::get<1>(data);
+                        const int panel_height = std::get<2>(data);
+                        const glm::ivec2 texel = detail::exactGTComparisonTexel(
+                            {x, y},
+                            params.content_rect,
+                            {panel_width, panel_height},
+                            panel.flip_y);
+                        const float* panel_data = std::get<0>(data).ptr<float>();
+                        const auto fetch = [&](const int channel) {
+                            return panel_data[(static_cast<std::size_t>(channel) * panel_height + texel.y) *
+                                                  panel_width +
+                                              texel.x];
                         };
-                        const glm::vec3 left = sample_color(clamp_uv(texture_uv - glm::vec2(texel_x, 0.0f)));
-                        const glm::vec3 right = sample_color(clamp_uv(texture_uv + glm::vec2(texel_x, 0.0f)));
-                        const glm::vec3 up = sample_color(clamp_uv(texture_uv - glm::vec2(0.0f, texel_y)));
-                        const glm::vec3 down = sample_color(clamp_uv(texture_uv + glm::vec2(0.0f, texel_y)));
-                        const glm::vec3 sharpened = color * (1.0f + 4.0f * kSpatialSharpenStrength) -
-                                                    (left + right + up + down) * kSpatialSharpenStrength;
-                        color = glm::clamp(sharpened,
-                                           glm::min(color, glm::min(glm::min(left, right), glm::min(up, down))),
-                                           glm::max(color, glm::max(glm::max(left, right), glm::max(up, down))));
+                        write(idx, {fetch(0), fetch(1), fetch(2)});
+                    } else {
+                        const auto sample_color = [&](const glm::vec2 sample_uv) {
+                            return glm::vec3{
+                                sample(std::get<0>(data), std::get<1>(data), std::get<2>(data),
+                                       sample_uv.x, sample_uv.y, 0),
+                                sample(std::get<0>(data), std::get<1>(data), std::get<2>(data),
+                                       sample_uv.x, sample_uv.y, 1),
+                                sample(std::get<0>(data), std::get<1>(data), std::get<2>(data),
+                                       sample_uv.x, sample_uv.y, 2)};
+                        };
+                        glm::vec3 color = sample_color(texture_uv);
+                        if (panel.spatial_filter) {
+                            constexpr float kSpatialSharpenStrength = 0.18f;
+                            const float texel_x = 1.0f / static_cast<float>(std::max(std::get<1>(data), 1));
+                            const float texel_y = 1.0f / static_cast<float>(std::max(std::get<2>(data), 1));
+                            const auto clamp_uv = [&clamp_max](const glm::vec2 uv) {
+                                return glm::clamp(uv, glm::vec2(0.0f), clamp_max);
+                            };
+                            const glm::vec3 left = sample_color(clamp_uv(texture_uv - glm::vec2(texel_x, 0.0f)));
+                            const glm::vec3 right = sample_color(clamp_uv(texture_uv + glm::vec2(texel_x, 0.0f)));
+                            const glm::vec3 up = sample_color(clamp_uv(texture_uv - glm::vec2(0.0f, texel_y)));
+                            const glm::vec3 down = sample_color(clamp_uv(texture_uv + glm::vec2(0.0f, texel_y)));
+                            const glm::vec3 sharpened = color * (1.0f + 4.0f * kSpatialSharpenStrength) -
+                                                        (left + right + up + down) * kSpatialSharpenStrength;
+                            color = glm::clamp(sharpened,
+                                               glm::min(color, glm::min(glm::min(left, right), glm::min(up, down))),
+                                               glm::max(color, glm::max(glm::max(left, right), glm::max(up, down))));
+                        }
+                        write(idx, color);
                     }
-                    write(idx, color);
 
                     const float dist_from_split = std::abs(static_cast<float>(x) + 0.5f - split_x);
                     if (dist_from_split < kMinBarWidthPx * 0.5f) {
@@ -1033,6 +1050,7 @@ namespace lfs::vis {
                lhs.image_path == rhs.image_path &&
                lhs.image_size == rhs.image_size &&
                lhs.undistort_requested == rhs.undistort_requested &&
+               lhs.full_resolution_source == rhs.full_resolution_source &&
                lhs.depth_visualization_mode == rhs.depth_visualization_mode &&
                lhs.background_color == rhs.background_color;
     }
@@ -1044,6 +1062,7 @@ namespace lfs::vis {
                entry.image_path == request.image_path &&
                entry.image_size == request.image_size &&
                entry.undistort_requested == request.undistort_requested &&
+               entry.full_resolution_source == request.full_resolution_source &&
                entry.depth_visualization_mode == request.depth_visualization_mode &&
                entry.background_color == request.background_color;
     }
@@ -1058,18 +1077,30 @@ namespace lfs::vis {
         };
         const bool image_valid = image && image->is_valid();
         assert(!image_valid || image->device() == lfs::core::Device::CPU);
-        const std::size_t image_bytes = image_valid ? image->bytes() : 0;
+        if (request.full_resolution_source) {
+            gt_comparison_image_cache_.remove_if([](const GTComparisonImageCacheEntry& entry) {
+                return !entry.full_resolution_source;
+            });
+            gt_comparison_image_cache_bytes_ = 0;
+            gt_comparison_image_cache_.remove_if([](const GTComparisonImageCacheEntry& entry) {
+                return entry.full_resolution_source;
+            });
+        }
+        const std::size_t image_bytes =
+            image_valid && !request.full_resolution_source ? image->bytes() : 0;
         auto entry = std::find_if(gt_comparison_image_cache_.begin(),
                                   gt_comparison_image_cache_.end(),
                                   same_key);
         if (entry != gt_comparison_image_cache_.end()) {
-            gt_comparison_image_cache_bytes_ -= entry->image && entry->image->is_valid()
-                                                    ? entry->image->bytes()
-                                                    : 0;
+            gt_comparison_image_cache_bytes_ -=
+                !entry->full_resolution_source && entry->image && entry->image->is_valid()
+                    ? entry->image->bytes()
+                    : 0;
             *entry = {
                 .camera_uid = request.camera_uid,
                 .mode = request.mode,
                 .undistort_requested = request.undistort_requested,
+                .full_resolution_source = request.full_resolution_source,
                 .image_path = request.image_path,
                 .image_size = request.image_size,
                 .depth_visualization_mode = request.depth_visualization_mode,
@@ -1082,6 +1113,7 @@ namespace lfs::vis {
             gt_comparison_image_cache_.push_back({.camera_uid = request.camera_uid,
                                                   .mode = request.mode,
                                                   .undistort_requested = request.undistort_requested,
+                                                  .full_resolution_source = request.full_resolution_source,
                                                   .image_path = request.image_path,
                                                   .image_size = request.image_size,
                                                   .depth_visualization_mode = request.depth_visualization_mode,
@@ -1093,12 +1125,29 @@ namespace lfs::vis {
         }
         gt_comparison_image_cache_bytes_ += image_bytes;
 
-        while (gt_comparison_image_cache_.size() > GT_COMPARISON_IMAGE_CACHE_MAX_ENTRIES ||
+        auto preview_count = [&]() {
+            return static_cast<std::size_t>(std::count_if(
+                gt_comparison_image_cache_.begin(),
+                gt_comparison_image_cache_.end(),
+                [](const GTComparisonImageCacheEntry& entry) {
+                    return !entry.full_resolution_source;
+                }));
+        };
+        while (preview_count() > GT_COMPARISON_IMAGE_CACHE_MAX_ENTRIES ||
                gt_comparison_image_cache_bytes_ > GT_COMPARISON_IMAGE_CACHE_MAX_BYTES) {
             const auto lru = std::min_element(
                 gt_comparison_image_cache_.begin(),
                 gt_comparison_image_cache_.end(),
-                [](const auto& lhs, const auto& rhs) { return lhs.last_used < rhs.last_used; });
+                [](const auto& lhs, const auto& rhs) {
+                    if (lhs.full_resolution_source != rhs.full_resolution_source) {
+                        return !lhs.full_resolution_source;
+                    }
+                    return lhs.last_used < rhs.last_used;
+                });
+            if (lru == gt_comparison_image_cache_.end() ||
+                lru->full_resolution_source) {
+                break;
+            }
             gt_comparison_image_cache_bytes_ -= lru->image && lru->image->is_valid()
                                                     ? lru->image->bytes()
                                                     : 0;
@@ -1126,6 +1175,22 @@ namespace lfs::vis {
         const std::filesystem::path request_image_path = request.image_path;
         {
             std::lock_guard lock(gt_comparison_image_mutex_);
+            if (request.full_resolution_source) {
+                prefetch_gt_comparison_image_requests_.clear();
+                gt_comparison_image_cache_.remove_if(
+                    [&request](const GTComparisonImageCacheEntry& entry) {
+                        return !entry.full_resolution_source &&
+                               (entry.camera_uid != request.camera_uid ||
+                                entry.image_path != request.image_path);
+                    });
+                gt_comparison_image_cache_bytes_ = 0;
+                for (const auto& entry : gt_comparison_image_cache_) {
+                    if (!entry.full_resolution_source && entry.image &&
+                        entry.image->is_valid()) {
+                        gt_comparison_image_cache_bytes_ += entry.image->bytes();
+                    }
+                }
+            }
             auto cache_entry = std::find_if(gt_comparison_image_cache_.begin(),
                                             gt_comparison_image_cache_.end(),
                                             cache_matches);
@@ -1234,7 +1299,8 @@ namespace lfs::vis {
                         [&](const GTComparisonImageCacheEntry& lhs,
                             const GTComparisonImageCacheEntry& rhs) {
                             const auto rank = [&](const GTComparisonImageCacheEntry& entry) {
-                                if (!entry.image || !entry.image->is_valid()) {
+                                if (entry.full_resolution_source ||
+                                    !entry.image || !entry.image->is_valid()) {
                                     return 0;
                                 }
                                 return is_same_camera(entry) ? 2 : 1;
@@ -1264,6 +1330,9 @@ namespace lfs::vis {
     }
 
     void RenderingManager::queueGTComparisonImagePrefetch(GTComparisonImageJobRequest request) {
+        if (request.full_resolution_source) {
+            return;
+        }
         const auto request_matches = [](const GTComparisonImageJobRequest& lhs,
                                         const GTComparisonImageJobRequest& rhs) {
             return gtRequestMatches(lhs, rhs);
@@ -1348,6 +1417,71 @@ namespace lfs::vis {
         split_right_image_generation_ = 0;
         gt_comparison_loading_placeholder_.reset();
         gt_comparison_failed_placeholder_.reset();
+        gt_comparison_actual_size_effective_ = false;
+        gt_comparison_crop_origin_ = {0, 0};
+        gt_comparison_crop_extent_ = {0, 0};
+        gt_comparison_full_extent_ = {0, 0};
+        gt_comparison_actual_viewport_extent_ = {0, 0};
+        gt_comparison_actual_camera_uid_ = -1;
+        gt_comparison_actual_tile_source_ = nullptr;
+        gt_comparison_actual_tile_.reset();
+        gt_comparison_actual_cuda_source_.reset();
+        gt_comparison_actual_cuda_source_key_ = nullptr;
+    }
+
+    void RenderingManager::invalidateGTComparisonActualSizeTile() {
+        gt_comparison_actual_tile_source_ = nullptr;
+        gt_comparison_actual_tile_.reset();
+        gt_comparison_cuda_image_.reset();
+        gt_comparison_cuda_source_ = nullptr;
+        gt_comparison_cuda_generation_ = 0;
+        gt_comparison_cuda_camera_uid_ = -1;
+        gt_comparison_cuda_size_ = {0, 0};
+        gt_comparison_cuda_undistorted_ = false;
+        split_left_source_ = nullptr;
+        split_left_source_size_ = {0, 0};
+        split_left_source_camera_uid_ = -1;
+        split_left_source_undistorted_ = false;
+    }
+
+    void RenderingManager::invalidateGTComparisonActualSizeResources() {
+        std::lock_guard lock(gt_comparison_image_mutex_);
+        ++gt_comparison_image_request_generation_;
+        if (pending_gt_comparison_image_request_ &&
+            pending_gt_comparison_image_request_->full_resolution_source) {
+            pending_gt_comparison_image_request_.reset();
+        }
+        if (active_gt_comparison_image_request_ &&
+            (active_gt_comparison_image_request_->full_resolution_source ||
+             active_gt_comparison_image_is_prefetch_)) {
+            active_gt_comparison_image_request_.reset();
+            active_gt_comparison_image_is_prefetch_ = false;
+        }
+        prefetch_gt_comparison_image_requests_.clear();
+        gt_comparison_image_cache_.remove_if([](const GTComparisonImageCacheEntry& entry) {
+            return entry.full_resolution_source;
+        });
+        gt_comparison_cuda_image_.reset();
+        gt_comparison_cuda_source_ = nullptr;
+        gt_comparison_cuda_generation_ = 0;
+        gt_comparison_cuda_camera_uid_ = -1;
+        gt_comparison_cuda_size_ = {0, 0};
+        gt_comparison_cuda_undistorted_ = false;
+        split_left_source_ = nullptr;
+        split_left_source_size_ = {0, 0};
+        split_left_source_camera_uid_ = -1;
+        split_left_source_undistorted_ = false;
+        split_left_image_generation_ = 0;
+        gt_comparison_actual_size_effective_ = false;
+        gt_comparison_crop_origin_ = {0, 0};
+        gt_comparison_crop_extent_ = {0, 0};
+        gt_comparison_full_extent_ = {0, 0};
+        gt_comparison_actual_viewport_extent_ = {0, 0};
+        gt_comparison_actual_camera_uid_ = -1;
+        gt_comparison_actual_tile_source_ = nullptr;
+        gt_comparison_actual_tile_.reset();
+        gt_comparison_actual_cuda_source_.reset();
+        gt_comparison_actual_cuda_source_key_ = nullptr;
     }
 
     void RenderingManager::gtComparisonImageWorkerLoop(const std::stop_token stop_token) {
@@ -1414,20 +1548,44 @@ namespace lfs::vis {
                         // per-preview-size re-encode caches.
                         lfs::io::LoadParams params;
                         params.resize_factor = -1;
-                        params.max_width = request.preview_max_dimension;
-                        params.cuda_stream = worker_stream;
+                        params.max_width =
+                            request.full_resolution_source ? 0 : request.preview_max_dimension;
+                        params.cuda_stream = request.full_resolution_source ? nullptr : worker_stream;
                         params.output_uint8 = true;
                         gt_tensor = request.image_loader->load_image_immediate(request.image_path, params);
                     } else {
                         gt_tensor = lfs::core::load_image_cached({.path = request.image_path,
                                                                   .resize_factor = -1,
-                                                                  .max_width = request.preview_max_dimension,
-                                                                  .stream = worker_stream,
+                                                                  .max_width = request.full_resolution_source
+                                                                                   ? 0
+                                                                                   : request.preview_max_dimension,
+                                                                  .stream = request.full_resolution_source
+                                                                                ? nullptr
+                                                                                : worker_stream,
                                                                   .output_uint8 = true,
                                                                   .skip_blob_cache = true});
                     }
+                    if (request.full_resolution_source && gt_tensor.is_valid() &&
+                        gt_tensor.ndim() == 3) {
+                        const auto gt_layout = lfs::rendering::detectImageLayout(gt_tensor);
+                        if (gt_layout != lfs::rendering::ImageLayout::Unknown) {
+                            if (gt_layout == lfs::rendering::ImageLayout::HWC) {
+                                gt_tensor = gt_tensor.permute({2, 0, 1});
+                            }
+                            if (gt_tensor.shape()[0] != 3) {
+                                throw std::runtime_error(
+                                    "full-resolution GT source must decode as RGB");
+                            }
+                            if (gt_tensor.dtype() != lfs::core::DataType::UInt8) {
+                                gt_tensor = (gt_tensor.clamp(0.0f, 1.0f) * 255.0f)
+                                                .to(lfs::core::DataType::UInt8);
+                            }
+                            gt_tensor = gt_tensor.cpu().contiguous();
+                            image = std::make_shared<lfs::core::Tensor>(std::move(gt_tensor));
+                        }
+                    }
                 }
-                if (request.mode == GTComparisonMode::RGB) {
+                if (request.mode == GTComparisonMode::RGB && !request.full_resolution_source) {
                     if (gt_tensor.is_valid() && gt_tensor.ndim() == 3) {
                         const auto gt_layout = lfs::rendering::detectImageLayout(gt_tensor);
                         if (gt_layout != lfs::rendering::ImageLayout::Unknown) {
@@ -2272,6 +2430,7 @@ namespace lfs::vis {
         lfs::rendering::FrameMetadata rendered_metadata{};
         std::string render_error;
         bool rendered_image_contains_ground_truth = false;
+        bool rendered_gt_actual_size = false;
         glm::ivec2 rendered_gt_content_size{0, 0};
         std::optional<SplitViewInfo> rendered_split_info;
         VulkanSplitViewParams pending_split_view{};
@@ -2680,96 +2839,246 @@ namespace lfs::vis {
                     std::shared_ptr<lfs::core::Tensor> gt_image;
                     std::string gt_error;
                     bool gt_loading = false;
+                    std::optional<detail::GTComparisonPixelRegion> gt_pixel_region;
 
                     if (gt_mode == GTComparisonMode::RGB) {
                         if (camera->image_path().empty() || !camera->has_image()) {
+                            gt_comparison_actual_size_effective_ = false;
                             gt_error = "RGB GT comparison requires a source image";
                         } else {
                             const bool undistort_requested =
                                 camera->camera_model_type() != lfs::core::CameraModelType::EQUIRECTANGULAR &&
                                 camera->is_undistort_precomputed();
+                            const bool actual_size_requested =
+                                frame_settings.gt_comparison_actual_size &&
+                                detail::isGTComparisonActualSizeCameraModelSupported(
+                                    camera->camera_model_type());
                             std::shared_ptr<lfs::io::PipelinedImageLoader> image_loader;
                             if (trainer_manager) {
                                 if (const auto* trainer = trainer_manager->getTrainer()) {
                                     image_loader = trainer->getActiveImageLoader();
                                 }
                             }
-                            // GT comparison loads a viewport-scaled preview. Do not publish that
-                            // transient size on the shared camera; training uses image dimensions
-                            // as its raster target and may be running concurrently.
-                            const auto lookup = getOrQueueGTComparisonImage({.camera_uid = camera->uid(),
-                                                                             .mode = gt_mode,
-                                                                             .image_path = camera->image_path(),
-                                                                             .preview_max_dimension = preview_max_dimension,
-                                                                             .image_size = preview_gt_size,
-                                                                             .undistort_requested = undistort_requested,
-                                                                             .undistort_params = undistort_requested
-                                                                                                     ? camera->undistort_params()
-                                                                                                     : lfs::core::UndistortParams{},
-                                                                             .depth_visualization_mode = frame_settings.depth_visualization_mode,
-                                                                             .background_color = frame_settings.background_color,
-                                                                             .camera = camera,
-                                                                             .image_loader = image_loader});
-                            gt_image = lookup.image;
-                            if (lookup.status == GTComparisonImageStatus::Loading) {
-                                markDirty(DirtyFlag::SPLIT_VIEW);
-                                if (lookup.stale_image && !lookup.grace_elapsed) {
-                                    gt_image = lookup.stale_image;
-                                } else {
-                                    gt_loading = true;
-                                }
-                            } else if (lookup.status == GTComparisonImageStatus::Failed) {
-                                gt_error = lookup.error.empty()
-                                               ? "RGB GT comparison could not load the source image"
-                                               : lookup.error;
-                            }
-
-                            const auto current_camera_it = gt_camera_index_by_uid_.find(camera->uid());
-                            if (current_camera_it != gt_camera_index_by_uid_.end() &&
-                                !gt_camera_index_cameras_.empty()) {
-                                const auto current_index = current_camera_it->second;
-                                const auto queue_neighbor = [&](const int direction) {
-                                    for (std::size_t offset = 1;
-                                         offset <= gt_camera_index_cameras_.size();
-                                         ++offset) {
-                                        const auto delta = direction * static_cast<int>(offset);
-                                        const auto index = static_cast<std::size_t>(
-                                            (static_cast<int>(current_index) + delta +
-                                             static_cast<int>(gt_camera_index_cameras_.size()) * 2) %
-                                            static_cast<int>(gt_camera_index_cameras_.size()));
-                                        const auto& neighbor = gt_camera_index_cameras_[index];
-                                        if (!neighbor || neighbor->uid() == camera->uid() ||
-                                            neighbor->image_path().empty()) {
-                                            continue;
+                            if (actual_size_requested) {
+                                const auto lookup = getOrQueueGTComparisonImage(
+                                    {.camera_uid = camera->uid(),
+                                     .mode = gt_mode,
+                                     .image_path = camera->image_path(),
+                                     .preview_max_dimension = 0,
+                                     .image_size = {0, 0},
+                                     .undistort_requested = undistort_requested,
+                                     .full_resolution_source = true,
+                                     .undistort_params = undistort_requested
+                                                             ? camera->undistort_params()
+                                                             : lfs::core::UndistortParams{},
+                                     .image_loader = image_loader});
+                                if (lookup.status == GTComparisonImageStatus::Ready &&
+                                    lookup.image && lookup.image->is_valid()) {
+                                    const auto& source = lookup.image;
+                                    try {
+                                        if (source->device() != lfs::core::Device::CPU ||
+                                            source->dtype() != lfs::core::DataType::UInt8 ||
+                                            source->ndim() != 3 || source->shape()[0] != 3) {
+                                            throw std::runtime_error(
+                                                "full-resolution source is not owned CPU CHW RGB8");
                                         }
-                                        const glm::ivec2 neighbor_size =
-                                            gtComparisonPreviewSize(*neighbor, gt_comparison_size);
-                                        const bool neighbor_undistort =
-                                            neighbor->camera_model_type() !=
-                                                lfs::core::CameraModelType::EQUIRECTANGULAR &&
-                                            neighbor->is_undistort_precomputed();
-                                        queueGTComparisonImagePrefetch({.camera_uid = neighbor->uid(),
-                                                                        .mode = gt_mode,
-                                                                        .image_path = neighbor->image_path(),
-                                                                        .preview_max_dimension =
-                                                                            std::max(neighbor_size.x, neighbor_size.y),
-                                                                        .image_size = neighbor_size,
-                                                                        .undistort_requested = neighbor_undistort,
-                                                                        .undistort_params = neighbor_undistort
-                                                                                                ? neighbor->undistort_params()
-                                                                                                : lfs::core::UndistortParams{},
-                                                                        .depth_visualization_mode = frame_settings.depth_visualization_mode,
-                                                                        .background_color = frame_settings.background_color,
-                                                                        .camera = neighbor,
-                                                                        .image_loader = image_loader});
-                                        break;
+                                        const glm::ivec2 source_extent{
+                                            static_cast<int>(source->shape()[2]),
+                                            static_cast<int>(source->shape()[1])};
+                                        std::optional<lfs::core::UndistortParams> scaled_undistort;
+                                        glm::ivec2 full_extent = source_extent;
+                                        if (undistort_requested) {
+                                            scaled_undistort =
+                                                lfs::core::scale_undistort_params(
+                                                    camera->undistort_params(),
+                                                    source_extent.x,
+                                                    source_extent.y);
+                                            full_extent = {
+                                                scaled_undistort->dst_width,
+                                                scaled_undistort->dst_height};
+                                        }
+
+                                        const bool recenter =
+                                            !gt_comparison_actual_size_effective_ ||
+                                            gt_comparison_actual_camera_uid_ != camera->uid() ||
+                                            gt_comparison_full_extent_ != full_extent ||
+                                            gt_comparison_actual_viewport_extent_ != current_size;
+                                        const auto crop = recenter
+                                                              ? detail::centerGTComparisonCrop(
+                                                                    full_extent, current_size)
+                                                              : detail::clampGTComparisonCrop(
+                                                                    full_extent,
+                                                                    current_size,
+                                                                    gt_comparison_crop_origin_);
+                                        if (!crop.valid()) {
+                                            throw std::runtime_error(
+                                                "full-resolution comparison crop is empty");
+                                        }
+                                        if (recenter || crop.origin != gt_comparison_crop_origin_ ||
+                                            crop.extent != gt_comparison_crop_extent_) {
+                                            invalidateGTComparisonActualSizeTile();
+                                        }
+                                        gt_comparison_crop_origin_ = crop.origin;
+                                        gt_comparison_crop_extent_ = crop.extent;
+                                        gt_comparison_full_extent_ = full_extent;
+                                        gt_comparison_actual_viewport_extent_ = current_size;
+                                        gt_comparison_actual_camera_uid_ = camera->uid();
+
+                                        if (!gt_comparison_actual_tile_ ||
+                                            gt_comparison_actual_tile_source_ != source.get()) {
+                                            lfs::core::Tensor visible;
+                                            if (scaled_undistort) {
+                                                if (!gt_comparison_actual_cuda_source_ ||
+                                                    gt_comparison_actual_cuda_source_key_ != source.get()) {
+                                                    auto cuda_source = source->cuda().contiguous();
+                                                    gt_comparison_actual_cuda_source_ =
+                                                        std::make_shared<lfs::core::Tensor>(
+                                                            std::move(cuda_source));
+                                                    gt_comparison_actual_cuda_source_key_ = source.get();
+                                                }
+                                                visible = lfs::core::undistort_image_region(
+                                                    *gt_comparison_actual_cuda_source_,
+                                                    *scaled_undistort,
+                                                    crop.origin.x,
+                                                    crop.origin.y,
+                                                    crop.extent.x,
+                                                    crop.extent.y,
+                                                    nullptr);
+                                            } else {
+                                                visible = source->slice(
+                                                                    1,
+                                                                    static_cast<std::size_t>(crop.origin.y),
+                                                                    static_cast<std::size_t>(
+                                                                        crop.origin.y + crop.extent.y))
+                                                              .slice(
+                                                                  2,
+                                                                  static_cast<std::size_t>(crop.origin.x),
+                                                                  static_cast<std::size_t>(
+                                                                      crop.origin.x + crop.extent.x))
+                                                              .contiguous();
+                                            }
+                                            visible = lfs::rendering::flipImageVertical(
+                                                visible,
+                                                lfs::rendering::ImageLayout::CHW);
+                                            gt_comparison_actual_tile_ =
+                                                std::make_shared<lfs::core::Tensor>(
+                                                    std::move(visible));
+                                            gt_comparison_actual_tile_source_ = source.get();
+                                        }
+                                        gt_image = gt_comparison_actual_tile_;
+                                        gt_pixel_region = detail::GTComparisonPixelRegion{
+                                            .origin = crop.origin,
+                                            .full_extent = full_extent,
+                                            .full_intrinsics = scaled_undistort
+                                                                   ? std::optional{
+                                                                         lfs::rendering::CameraIntrinsics{
+                                                                             .focal_x = scaled_undistort->dst_fx,
+                                                                             .focal_y = scaled_undistort->dst_fy,
+                                                                             .center_x = scaled_undistort->dst_cx,
+                                                                             .center_y = scaled_undistort->dst_cy}}
+                                                                   : std::nullopt};
+                                        gt_comparison_actual_size_effective_ = true;
+                                        rendered_gt_actual_size = true;
+                                    } catch (const std::exception& e) {
+                                        gt_comparison_actual_size_effective_ = false;
+                                        gt_error = std::format(
+                                            "RGB GT comparison 1:1 tile failed: {}", e.what());
+                                        LOG_WARN("{}", gt_error);
                                     }
-                                };
-                                queue_neighbor(-1);
-                                queue_neighbor(1);
+                                } else if (lookup.status == GTComparisonImageStatus::Loading) {
+                                    gt_comparison_actual_size_effective_ = false;
+                                    markDirty(DirtyFlag::SPLIT_VIEW);
+                                    gt_image = lookup.stale_image;
+                                    gt_loading = !gt_image;
+                                } else {
+                                    gt_comparison_actual_size_effective_ = false;
+                                    gt_error = lookup.error.empty()
+                                                   ? "RGB GT comparison could not load the full-resolution source"
+                                                   : lookup.error;
+                                }
+                            } else {
+                                gt_comparison_actual_size_effective_ = false;
+                                // Fit comparison loads a viewport-scaled preview. Do not publish
+                                // that transient size on the shared camera; training uses image
+                                // dimensions as its raster target and may run concurrently.
+                                const auto lookup = getOrQueueGTComparisonImage(
+                                    {.camera_uid = camera->uid(),
+                                     .mode = gt_mode,
+                                     .image_path = camera->image_path(),
+                                     .preview_max_dimension = preview_max_dimension,
+                                     .image_size = preview_gt_size,
+                                     .undistort_requested = undistort_requested,
+                                     .undistort_params = undistort_requested
+                                                              ? camera->undistort_params()
+                                                              : lfs::core::UndistortParams{},
+                                     .depth_visualization_mode = frame_settings.depth_visualization_mode,
+                                     .background_color = frame_settings.background_color,
+                                     .camera = camera,
+                                     .image_loader = image_loader});
+                                gt_image = lookup.image;
+                                if (lookup.status == GTComparisonImageStatus::Loading) {
+                                    markDirty(DirtyFlag::SPLIT_VIEW);
+                                    if (lookup.stale_image && !lookup.grace_elapsed) {
+                                        gt_image = lookup.stale_image;
+                                    } else {
+                                        gt_loading = true;
+                                    }
+                                } else if (lookup.status == GTComparisonImageStatus::Failed) {
+                                    gt_error = lookup.error.empty()
+                                                   ? "RGB GT comparison could not load the source image"
+                                                   : lookup.error;
+                                }
+
+                                const auto current_camera_it =
+                                    gt_camera_index_by_uid_.find(camera->uid());
+                                if (current_camera_it != gt_camera_index_by_uid_.end() &&
+                                    !gt_camera_index_cameras_.empty()) {
+                                    const auto current_index = current_camera_it->second;
+                                    const auto queue_neighbor = [&](const int direction) {
+                                        for (std::size_t offset = 1;
+                                             offset <= gt_camera_index_cameras_.size();
+                                             ++offset) {
+                                            const auto delta = direction * static_cast<int>(offset);
+                                            const auto index = static_cast<std::size_t>(
+                                                (static_cast<int>(current_index) + delta +
+                                                 static_cast<int>(gt_camera_index_cameras_.size()) * 2) %
+                                                static_cast<int>(gt_camera_index_cameras_.size()));
+                                            const auto& neighbor = gt_camera_index_cameras_[index];
+                                            if (!neighbor || neighbor->uid() == camera->uid() ||
+                                                neighbor->image_path().empty()) {
+                                                continue;
+                                            }
+                                            const glm::ivec2 neighbor_size =
+                                                gtComparisonPreviewSize(*neighbor, gt_comparison_size);
+                                            const bool neighbor_undistort =
+                                                neighbor->camera_model_type() !=
+                                                    lfs::core::CameraModelType::EQUIRECTANGULAR &&
+                                                neighbor->is_undistort_precomputed();
+                                            queueGTComparisonImagePrefetch(
+                                                {.camera_uid = neighbor->uid(),
+                                                 .mode = gt_mode,
+                                                 .image_path = neighbor->image_path(),
+                                                 .preview_max_dimension =
+                                                     std::max(neighbor_size.x, neighbor_size.y),
+                                                 .image_size = neighbor_size,
+                                                 .undistort_requested = neighbor_undistort,
+                                                 .undistort_params = neighbor_undistort
+                                                                          ? neighbor->undistort_params()
+                                                                          : lfs::core::UndistortParams{},
+                                                 .depth_visualization_mode = frame_settings.depth_visualization_mode,
+                                                 .background_color = frame_settings.background_color,
+                                                 .camera = neighbor,
+                                                 .image_loader = image_loader});
+                                            break;
+                                        }
+                                    };
+                                    queue_neighbor(-1);
+                                    queue_neighbor(1);
+                                }
                             }
                         }
                     } else if (gt_mode == GTComparisonMode::Depth) {
+                        gt_comparison_actual_size_effective_ = false;
                         if (!camera->has_depth()) {
                             gt_error = "Depth GT comparison requires a depth map for the selected camera";
                         } else {
@@ -2873,11 +3182,14 @@ namespace lfs::vis {
                                              std::max(gt_comparison_scale, 1.0e-6f))),
                                          1)};
 
-                            auto request = buildViewportRenderRequest(frame_ctx, render_gt_size);
+                            const glm::ivec2 comparison_render_size =
+                                gt_pixel_region ? gt_size : render_gt_size;
+                            auto request = buildViewportRenderRequest(frame_ctx, comparison_render_size);
                             const glm::mat4 scene_transform =
                                 detail::currentSceneTransform(scene_manager, camera->uid());
                             const auto render_camera =
-                                detail::buildGTRenderCamera(*camera, render_gt_size, scene_transform);
+                                detail::buildGTRenderCamera(
+                                    *camera, comparison_render_size, scene_transform, gt_pixel_region);
                             if (render_camera) {
                                 request.frame_view.rotation = render_camera->rotation;
                                 request.frame_view.translation = render_camera->translation;
@@ -3212,7 +3524,7 @@ namespace lfs::vis {
                                     if (auto cuda_gt = ensure_cuda_gt_viewport_image(
                                             gt_image,
                                             camera->uid(),
-                                            preview_gt_size,
+                                            gt_size,
                                             gt_undistorted,
                                             "GT comparison ground-truth display")) {
                                         gt_image = std::move(cuda_gt);
@@ -3227,8 +3539,16 @@ namespace lfs::vis {
                                 }
 
                                 const SplitCompositeContentRect rect =
-                                    resolveSplitCompositeContentRect(render_size, true, gt_size);
+                                    rendered_gt_actual_size
+                                        ? SplitCompositeContentRect{
+                                              .x = std::max((current_size.x - gt_size.x) / 2, 0),
+                                              .y = std::max((current_size.y - gt_size.y) / 2, 0),
+                                              .width = gt_size.x,
+                                              .height = gt_size.y}
+                                        : resolveSplitCompositeContentRect(render_size, true, gt_size);
                                 pending_split_view.enabled = true;
+                                pending_split_view.exact_texel_sampling =
+                                    rendered_gt_actual_size;
                                 pending_split_view.split_position = frame_settings.split_position;
                                 pending_split_view.background = frame_settings.background_color;
                                 pending_split_view.content_rect = {rect.x, rect.y, rect.width, rect.height};
@@ -3398,7 +3718,8 @@ namespace lfs::vis {
                 spatial_runtime_ready && !rendered_image_contains_ground_truth;
             pending_split_view.left.spatial_filter = filter_reconstructed_panels;
             pending_split_view.right.spatial_filter = filter_reconstructed_panels;
-            pending_split_view.coordinate_extent = render_size;
+            pending_split_view.coordinate_extent =
+                rendered_gt_actual_size ? current_size : render_size;
         }
 
         const bool render_point_cloud = frame_settings.point_cloud_mode || !has_visible_gaussian_model;

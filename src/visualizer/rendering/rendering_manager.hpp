@@ -369,16 +369,18 @@ namespace lfs::vis {
         ContentBounds getContentBounds(const glm::ivec2& viewport_size) const;
 
         // Current camera tracking for GT comparison
-        void setCurrentCameraId(int cam_id) {
-            const bool changed = camera_interaction_service_.currentCameraId() != cam_id;
-            camera_interaction_service_.setCurrentCameraId(cam_id);
-            if (changed) {
-                invalidateCameraMetricsRequests(true);
-            }
-            markDirty(DirtyFlag::SPLIT_VIEW | DirtyFlag::PPISP);
-        }
+        void setCurrentCameraId(int cam_id);
         int getCurrentCameraId() const { return camera_interaction_service_.currentCameraId(); }
         int getHoveredCameraId() const { return camera_interaction_service_.hoveredCameraId(); }
+        [[nodiscard]] bool isGTComparisonActualSizeAvailable(
+            const SceneManager* scene_manager) const;
+        [[nodiscard]] bool isGTComparisonActualSizeActive() const {
+            return gt_comparison_actual_size_effective_;
+        }
+        [[nodiscard]] glm::ivec2 getGTComparisonCropOrigin() const {
+            return gt_comparison_crop_origin_;
+        }
+        void setGTComparisonCropOrigin(glm::ivec2 origin);
 
         struct CameraMetricsOverlayState {
             int camera_id = -1;
@@ -709,6 +711,7 @@ namespace lfs::vis {
             int preview_max_dimension = 0;
             glm::ivec2 image_size{0, 0};
             bool undistort_requested = false;
+            bool full_resolution_source = false;
             lfs::core::UndistortParams undistort_params{};
             lfs::rendering::DepthVisualizationMode depth_visualization_mode =
                 lfs::rendering::DepthVisualizationMode::Palette;
@@ -748,6 +751,8 @@ namespace lfs::vis {
             GTComparisonImageJobRequest request);
         void queueGTComparisonImagePrefetch(GTComparisonImageJobRequest request);
         void invalidateGTComparisonImageCache();
+        void invalidateGTComparisonActualSizeTile();
+        void invalidateGTComparisonActualSizeResources();
         void insertGTComparisonImageCacheEntry(
             const GTComparisonImageJobRequest& request,
             std::shared_ptr<lfs::core::Tensor> image,
@@ -846,6 +851,7 @@ namespace lfs::vis {
             int camera_uid = -1;
             GTComparisonMode mode = GTComparisonMode::RGB;
             bool undistort_requested = false;
+            bool full_resolution_source = false;
             std::filesystem::path image_path;
             glm::ivec2 image_size{0, 0};
             lfs::rendering::DepthVisualizationMode depth_visualization_mode =
@@ -873,6 +879,16 @@ namespace lfs::vis {
         uint64_t gt_comparison_image_request_generation_ = 0;
         std::condition_variable_any gt_comparison_image_cv_;
         std::jthread gt_comparison_image_worker_;
+        bool gt_comparison_actual_size_effective_ = false;
+        glm::ivec2 gt_comparison_crop_origin_{0, 0};
+        glm::ivec2 gt_comparison_crop_extent_{0, 0};
+        glm::ivec2 gt_comparison_full_extent_{0, 0};
+        glm::ivec2 gt_comparison_actual_viewport_extent_{0, 0};
+        int gt_comparison_actual_camera_uid_ = -1;
+        const lfs::core::Tensor* gt_comparison_actual_tile_source_ = nullptr;
+        std::shared_ptr<lfs::core::Tensor> gt_comparison_actual_tile_;
+        std::shared_ptr<lfs::core::Tensor> gt_comparison_actual_cuda_source_;
+        const lfs::core::Tensor* gt_comparison_actual_cuda_source_key_ = nullptr;
         // #1574 GT depth/normal async hold-then-swap: at most one outstanding ticket.
         // Panel keeps gt_async_held_display_ until the next ticket delivers (never blank).
         std::uint64_t gt_async_depth_ticket_ = 0;

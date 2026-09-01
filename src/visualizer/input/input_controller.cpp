@@ -44,6 +44,31 @@
 
 namespace lfs::vis {
 
+    namespace detail {
+        glm::ivec2 gtImagePanCropOrigin(
+            const glm::ivec2 start_origin,
+            const glm::dvec2 start_mouse,
+            const glm::dvec2 current_mouse,
+            const glm::ivec2 logical_window_extent,
+            const glm::ivec2 physical_window_extent) {
+            const glm::dvec2 scale{
+                logical_window_extent.x > 0 && physical_window_extent.x > 0
+                    ? static_cast<double>(physical_window_extent.x) /
+                          static_cast<double>(logical_window_extent.x)
+                    : 1.0,
+                logical_window_extent.y > 0 && physical_window_extent.y > 0
+                    ? static_cast<double>(physical_window_extent.y) /
+                          static_cast<double>(logical_window_extent.y)
+                    : 1.0};
+            const glm::dvec2 physical_delta =
+                (current_mouse - start_mouse) * scale;
+            return start_origin -
+                   glm::ivec2{
+                       static_cast<int>(std::lround(physical_delta.x)),
+                       static_cast<int>(std::lround(physical_delta.y))};
+        }
+    } // namespace detail
+
     using namespace lfs::core::events;
 
     namespace {
@@ -402,7 +427,7 @@ namespace lfs::vis {
         });
 
         window_focus_lost_handler_id_ = internal::WindowFocusLost::when([this](const auto&) {
-            drag_mode_ = DragMode::None;
+            clearViewportDragState();
             clearSelectedCameraContextMenuGesture();
             press_selected_camera_frustum_ = false;
             pressed_camera_frustum_id_ = -1;
@@ -561,6 +586,7 @@ namespace lfs::vis {
     }
 
     void InputController::onWindowFocusLost() {
+        clearViewportDragState();
         if (current_cursor_ != CursorType::Default) {
             SDL_SetCursor(SDL_GetDefaultCursor());
             current_cursor_ = CursorType::Default;
@@ -925,6 +951,15 @@ namespace lfs::vis {
             switch (bound_action) {
             case input::Action::CAMERA_PAN:
                 if (const auto interaction = resolvePanelInteraction(x, y); interaction && interaction->valid()) {
+                    if (auto* const rendering = services().renderingOrNull();
+                        rendering && rendering->isGTComparisonActualSizeActive()) {
+                        drag_mode_ = DragMode::GTImagePan;
+                        drag_button_ = button;
+                        gt_image_pan_start_mouse_ = {x, y};
+                        gt_image_pan_start_origin_ =
+                            rendering->getGTComparisonCropOrigin();
+                        break;
+                    }
                     const int context_camera_id =
                         is_right_button && services().renderingOrNull()
                             ? services().renderingOrNull()->pickCameraFrustum(glm::vec2(x, y))
@@ -1144,6 +1179,15 @@ namespace lfs::vis {
             }
 
             bool was_dragging = false;
+            if (drag_mode_ == DragMode::GTImagePan) {
+                drag_mode_ = DragMode::None;
+                drag_button_ = -1;
+                drag_viewport_ = nullptr;
+                press_selected_camera_frustum_ = false;
+                pressed_camera_frustum_id_ = -1;
+                pressed_camera_frustum_modifiers_ = input::MODIFIER_NONE;
+                return;
+            }
             Viewport* released_viewport = drag_viewport_;
             const SplitViewPanelId released_panel = drag_split_panel_;
 
@@ -1503,6 +1547,26 @@ namespace lfs::vis {
         if (drag_mode_ != DragMode::None &&
             drag_mode_ != DragMode::Gizmo &&
             drag_mode_ != DragMode::Splitter) {
+            if (drag_mode_ == DragMode::GTImagePan) {
+                if (auto* const rendering = services().renderingOrNull()) {
+                    glm::ivec2 logical_extent{0, 0};
+                    glm::ivec2 physical_extent{0, 0};
+                    if (window_) {
+                        SDL_GetWindowSize(
+                            window_, &logical_extent.x, &logical_extent.y);
+                        SDL_GetWindowSizeInPixels(
+                            window_, &physical_extent.x, &physical_extent.y);
+                    }
+                    rendering->setGTComparisonCropOrigin(
+                        detail::gtImagePanCropOrigin(
+                            gt_image_pan_start_origin_,
+                            gt_image_pan_start_mouse_,
+                            current_pos,
+                            logical_extent,
+                            physical_extent));
+                }
+                return;
+            }
             auto* const target_viewport = drag_viewport_ ? drag_viewport_ : &viewport_;
 
             switch (drag_mode_) {
@@ -2183,6 +2247,15 @@ namespace lfs::vis {
         }
 
         if (drag_mode_ == DragMode::Pan && drag_button_released) {
+            drag_mode_ = DragMode::None;
+            drag_button_ = -1;
+            drag_viewport_ = nullptr;
+            press_selected_camera_frustum_ = false;
+            pressed_camera_frustum_id_ = -1;
+            pressed_camera_frustum_modifiers_ = input::MODIFIER_NONE;
+        }
+
+        if (drag_mode_ == DragMode::GTImagePan && drag_button_released) {
             drag_mode_ = DragMode::None;
             drag_button_ = -1;
             drag_viewport_ = nullptr;

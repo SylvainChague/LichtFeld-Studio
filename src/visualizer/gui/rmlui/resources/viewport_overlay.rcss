@@ -651,6 +651,24 @@ body {
     line-height: 20dp;
 }
 
+#gt-compare-mode-block .viewport-gt-compare-actual-size {
+    width: 34dp;
+    min-width: 34dp;
+    height: 22dp;
+    min-height: 22dp;
+    margin-left: 4dp;
+    padding: 0 3dp;
+    border-radius: 4dp;
+    font-size: 11dp;
+    line-height: 20dp;
+    box-sizing: border-box;
+}
+
+#gt-compare-mode-block .viewport-gt-compare-actual-size:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
 .viewport-transform-panel.viewport-export-panel {
     width: 470dp;
     min-width: 470dp;

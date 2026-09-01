@@ -4231,6 +4231,36 @@ namespace lfs::python {
             nb::arg("mode"), "Set ground-truth comparison mode.");
 
         m.def(
+            "get_gt_comparison_actual_size",
+            []() {
+                auto* rm = lfs::python::get_rendering_manager();
+                return rm && rm->getSettings().gt_comparison_actual_size;
+            },
+            "Return whether GT comparison 1:1 pixel mode is requested.");
+
+        m.def(
+            "set_gt_comparison_actual_size",
+            [](const bool enabled) {
+                auto* rm = lfs::python::get_rendering_manager();
+                if (!rm)
+                    return;
+                auto settings = rm->getSettings();
+                settings.gt_comparison_actual_size = enabled;
+                rm->updateSettings(settings, vis::DirtyFlag::SPLIT_VIEW);
+            },
+            nb::arg("enabled"),
+            "Enable or disable GT comparison 1:1 pixel mode.");
+
+        m.def(
+            "is_gt_comparison_actual_size_available",
+            []() {
+                auto* rm = lfs::python::get_rendering_manager();
+                return rm && rm->isGTComparisonActualSizeAvailable(
+                                 lfs::python::get_scene_manager());
+            },
+            "Return whether the selected GT camera supports RGB perspective 1:1 pixel mode.");
+
+        m.def(
             "cycle_gt_comparison_mode",
             []() -> const char* {
                 auto* rm = lfs::python::get_rendering_manager();

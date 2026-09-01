@@ -641,6 +641,17 @@ namespace lfs::vis {
         EXPECT_FALSE(controller.isContinuousInputActive());
     }
 
+    TEST_F(InputControllerFocusTest, GTImagePanConvertsTotalDragToPhysicalPixelsOnce) {
+        const auto origin = detail::gtImagePanCropOrigin(
+            {100, 200},
+            {10.0, 20.0},
+            {13.25, 16.5},
+            {1000, 500},
+            {2000, 1000});
+
+        EXPECT_EQ(origin, glm::ivec2(93, 207));
+    }
+
     TEST_F(InputControllerFocusTest, FpvModeUsesInPlaceLookForPrimaryCameraDrag) {
         Viewport viewport(200, 200);
         InputController controller(nullptr, viewport);

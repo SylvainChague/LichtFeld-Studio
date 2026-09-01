@@ -5,8 +5,11 @@
 #include "core/cuda/undistort/undistort.hpp"
 #include "core/image_io.hpp"
 #include "io/formats/colmap.hpp"
+#include <array>
+#include <cstdint>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <vector>
 
 using namespace lfs::core;
 
@@ -55,6 +58,74 @@ namespace {
         ASSERT_EQ(dst.ndim(), 2u);
         EXPECT_EQ(static_cast<int>(dst.shape()[0]), params.dst_height);
         EXPECT_EQ(static_cast<int>(dst.shape()[1]), params.dst_width);
+    }
+
+    UndistortParams make_region_test_params(const CameraModelType model) {
+        UndistortParams params{};
+        params.src_fx = 24.0f;
+        params.src_fy = 23.0f;
+        params.src_cx = 16.0f;
+        params.src_cy = 12.0f;
+        params.dst_fx = 24.0f;
+        params.dst_fy = 23.0f;
+        params.dst_cx = 16.0f;
+        params.dst_cy = 12.0f;
+        params.src_width = 32;
+        params.src_height = 24;
+        params.dst_width = 32;
+        params.dst_height = 24;
+        params.model_type = model;
+        if (model == CameraModelType::PINHOLE) {
+            params.distortion[0] = -0.08f;
+            params.distortion[1] = 0.01f;
+            params.distortion[3] = 0.002f;
+            params.distortion[4] = -0.001f;
+            params.num_distortion = 5;
+        } else if (model == CameraModelType::FISHEYE) {
+            params.distortion[0] = 0.04f;
+            params.distortion[1] = -0.005f;
+            params.num_distortion = 4;
+        } else {
+            params.distortion[0] = 0.03f;
+            params.distortion[1] = -0.004f;
+            params.distortion[4] = 0.001f;
+            params.distortion[5] = -0.0015f;
+            params.distortion[6] = 0.0005f;
+            params.distortion[8] = -0.0004f;
+            params.num_distortion = 10;
+        }
+        return params;
+    }
+
+    void expect_region_matches_full(
+        const Tensor& source,
+        const Tensor& float_source,
+        const UndistortParams& params,
+        const int x,
+        const int y,
+        const int width,
+        const int height) {
+        auto full = undistort_image(float_source, params, nullptr);
+        auto region = undistort_image_region(
+            source, params, x, y, width, height, nullptr);
+        cudaDeviceSynchronize();
+
+        ASSERT_EQ(region.dtype(), DataType::Float32);
+        ASSERT_EQ(region.shape(), TensorShape(
+                                      {size_t{3},
+                                       static_cast<std::size_t>(height),
+                                       static_cast<std::size_t>(width)}));
+        const auto expected =
+            full.slice(1, y, y + height).slice(2, x, x + width).cpu().contiguous();
+        const auto actual = region.cpu().contiguous();
+        const float* expected_data = expected.ptr<float>();
+        const float* actual_data = actual.ptr<float>();
+        ASSERT_NE(expected_data, nullptr);
+        ASSERT_NE(actual_data, nullptr);
+        for (std::size_t index = 0; index < actual.numel(); ++index) {
+            EXPECT_NEAR(actual_data[index], expected_data[index], 1.0e-6f)
+                << "mismatch at region element " << index;
+        }
     }
 
 } // namespace
@@ -435,6 +506,79 @@ TEST(UndistortConsistency, MaskAndImageSameDimensions) {
 
     EXPECT_EQ(img_dst.shape()[1], mask_dst.shape()[0]);
     EXPECT_EQ(img_dst.shape()[2], mask_dst.shape()[1]);
+}
+
+TEST(UndistortRegion, FloatAndUInt8MatchFullFrameSlicesForAllModels) {
+    constexpr std::size_t kElements = 3u * 24u * 32u;
+    std::vector<std::uint8_t> uint8_values(kElements);
+    std::vector<float> float_values(kElements);
+    for (std::size_t i = 0; i < kElements; ++i) {
+        uint8_values[i] = static_cast<std::uint8_t>((i * 37u + 11u) % 256u);
+        float_values[i] = static_cast<float>(uint8_values[i]) / 255.0f;
+    }
+    const auto uint8_source =
+        Tensor::from_blob(
+            uint8_values.data(), {size_t{3}, size_t{24}, size_t{32}}, Device::CPU,
+            DataType::UInt8)
+            .cuda();
+    const auto float_source =
+        Tensor::from_vector(
+            float_values, {size_t{3}, size_t{24}, size_t{32}}, Device::CPU)
+            .cuda();
+    const std::array<CameraModelType, 3> models{
+        CameraModelType::PINHOLE,
+        CameraModelType::FISHEYE,
+        CameraModelType::THIN_PRISM_FISHEYE};
+    const std::array<std::array<int, 4>, 3> regions{{
+        {0, 0, 7, 5},
+        {12, 9, 8, 6},
+        {25, 19, 7, 5},
+    }};
+
+    for (const auto model : models) {
+        const auto params = make_region_test_params(model);
+        for (const auto& region : regions) {
+            SCOPED_TRACE(static_cast<int>(model));
+            expect_region_matches_full(
+                float_source,
+                float_source,
+                params,
+                region[0],
+                region[1],
+                region[2],
+                region[3]);
+            expect_region_matches_full(
+                uint8_source,
+                float_source,
+                params,
+                region[0],
+                region[1],
+                region[2],
+                region[3]);
+        }
+    }
+}
+
+TEST(UndistortRegion, RejectsInvalidDestinationRegionsAndDtypes) {
+    const auto params = make_region_test_params(CameraModelType::PINHOLE);
+    const auto source =
+        Tensor::zeros({size_t{3}, size_t{24}, size_t{32}}, Device::CUDA);
+
+    EXPECT_THROW(
+        (void)undistort_image_region(source, params, -1, 0, 4, 4, nullptr),
+        std::invalid_argument);
+    EXPECT_THROW(
+        (void)undistort_image_region(source, params, 30, 20, 4, 5, nullptr),
+        std::invalid_argument);
+    EXPECT_THROW(
+        (void)undistort_image_region(source, params, 0, 0, 0, 4, nullptr),
+        std::invalid_argument);
+    const auto unsupported =
+        source.to(DataType::Float16);
+    EXPECT_THROW(
+        (void)undistort_image_region(
+            unsupported, params, 0, 0, 4, 4, nullptr),
+        std::invalid_argument);
 }
 
 // ====================== Center pixel preservation ======================

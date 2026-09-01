@@ -36,12 +36,17 @@ class GTCompareControlsController:
     _DIRTY_FIELDS = (
         "gt_compare_tool_label",
         "gt_compare_mode_value",
+        "gt_compare_actual_size",
+        "gt_compare_actual_size_available",
+        "gt_compare_actual_size_tooltip",
     )
 
     def __init__(self):
         self._handle = None
         self._visible = False
         self._mode = _DEFAULT_MODE
+        self._actual_size = False
+        self._actual_size_available = False
         self._last_state_key = None
 
     @property
@@ -54,6 +59,24 @@ class GTCompareControlsController:
             "gt_compare_mode_value",
             lambda: self._mode,
             self._set_mode,
+        )
+        model.bind_func("gt_compare_actual_size", lambda: self._actual_size)
+        model.bind_func(
+            "gt_compare_actual_size_available",
+            lambda: self._actual_size_available,
+        )
+        model.bind_func(
+            "gt_compare_actual_size_tooltip",
+            lambda: _ui_label(
+                "tooltip.gt_compare_actual_size",
+                "Show RGB ground truth at one image pixel per physical display pixel. "
+                "Unavailable for normal, depth, missing images, and orthographic or "
+                "equirectangular cameras.",
+            ),
+        )
+        model.bind_event(
+            "gt_compare_toggle_actual_size",
+            self._toggle_actual_size,
         )
         self._handle = model.get_handle()
 
@@ -82,7 +105,16 @@ class GTCompareControlsController:
             return ",".join(dirty_reasons) if dirty else None
 
         self._mode = self._read_mode()
-        state_key = (RuntimeState.language_generation.value, self._mode)
+        self._actual_size_available = self._read_actual_size_available()
+        self._actual_size = (
+            self._actual_size_available and self._read_actual_size()
+        )
+        state_key = (
+            RuntimeState.language_generation.value,
+            self._mode,
+            self._actual_size,
+            self._actual_size_available,
+        )
         if state_key != self._last_state_key:
             self._last_state_key = state_key
             self._dirty_all()
@@ -124,6 +156,39 @@ class GTCompareControlsController:
             self._mode = self._read_mode()
         else:
             self._mode = _DEFAULT_MODE
+        self._dirty_all()
+
+    def _read_actual_size(self):
+        getter = getattr(lf.ui, "get_gt_comparison_actual_size", None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
+    def _read_actual_size_available(self):
+        getter = getattr(lf.ui, "is_gt_comparison_actual_size_available", None)
+        if not callable(getter):
+            return False
+        try:
+            return bool(getter())
+        except Exception:
+            return False
+
+    def _toggle_actual_size(self, *_):
+        if not self._read_actual_size_available():
+            return
+        setter = getattr(lf.ui, "set_gt_comparison_actual_size", None)
+        if callable(setter):
+            try:
+                setter(not self._read_actual_size())
+            except Exception:
+                pass
+        self._actual_size_available = self._read_actual_size_available()
+        self._actual_size = (
+            self._actual_size_available and self._read_actual_size()
+        )
         self._dirty_all()
 
     def _dirty_all(self):

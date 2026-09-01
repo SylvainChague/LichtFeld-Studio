@@ -50,9 +50,81 @@ namespace lfs::vis {
 
     namespace detail {
 
+        GTComparisonCrop clampGTComparisonCrop(
+            const glm::ivec2 full_extent,
+            const glm::ivec2 viewport_extent,
+            const glm::ivec2 requested_origin) {
+            if (full_extent.x <= 0 || full_extent.y <= 0 ||
+                viewport_extent.x <= 0 || viewport_extent.y <= 0) {
+                return {};
+            }
+            const glm::ivec2 extent{
+                std::min(full_extent.x, viewport_extent.x),
+                std::min(full_extent.y, viewport_extent.y)};
+            const glm::ivec2 max_origin{
+                std::max(full_extent.x - extent.x, 0),
+                std::max(full_extent.y - extent.y, 0)};
+            return {
+                .origin = {
+                    std::clamp(requested_origin.x, 0, max_origin.x),
+                    std::clamp(requested_origin.y, 0, max_origin.y)},
+                .extent = extent};
+        }
+
+        GTComparisonCrop centerGTComparisonCrop(
+            const glm::ivec2 full_extent,
+            const glm::ivec2 viewport_extent) {
+            if (full_extent.x <= 0 || full_extent.y <= 0 ||
+                viewport_extent.x <= 0 || viewport_extent.y <= 0) {
+                return {};
+            }
+            const glm::ivec2 extent{
+                std::min(full_extent.x, viewport_extent.x),
+                std::min(full_extent.y, viewport_extent.y)};
+            return clampGTComparisonCrop(
+                full_extent,
+                viewport_extent,
+                {(full_extent.x - extent.x) / 2,
+                 (full_extent.y - extent.y) / 2});
+        }
+
+        glm::ivec2 exactGTComparisonTexel(
+            const glm::ivec2 framebuffer_pixel,
+            const glm::ivec4 content_rect,
+            const glm::ivec2 panel_extent,
+            const bool flip_y) {
+            if (panel_extent.x <= 0 || panel_extent.y <= 0) {
+                return {0, 0};
+            }
+            glm::ivec2 texel{
+                framebuffer_pixel.x - content_rect.x,
+                framebuffer_pixel.y - content_rect.y};
+            if (flip_y) {
+                texel.y = content_rect.w - 1 - texel.y;
+            }
+            return {
+                std::clamp(texel.x, 0, panel_extent.x - 1),
+                std::clamp(texel.y, 0, panel_extent.y - 1)};
+        }
+
+        bool isGTComparisonActualSizeCameraModelSupported(
+            const lfs::core::CameraModelType model) {
+            switch (model) {
+            case lfs::core::CameraModelType::PINHOLE:
+            case lfs::core::CameraModelType::FISHEYE:
+            case lfs::core::CameraModelType::THIN_PRISM_FISHEYE:
+                return true;
+            case lfs::core::CameraModelType::ORTHO:
+            case lfs::core::CameraModelType::EQUIRECTANGULAR:
+            default:
+                return false;
+            }
+        }
+
         std::optional<GTRenderCamera> buildGTRenderCamera(const lfs::core::Camera& cam,
                                                           const glm::ivec2 render_size,
-                                                          const glm::mat4& scene_transform) {
+                                                          const glm::mat4& scene_transform,
+                                                          const std::optional<GTComparisonPixelRegion> pixel_region) {
             if (render_size.x <= 0 || render_size.y <= 0) {
                 return std::nullopt;
             }
@@ -77,30 +149,49 @@ namespace lfs::vis {
                 cam.camera_model_type() == lfs::core::CameraModelType::EQUIRECTANGULAR;
 
             if (!render_camera.equirectangular) {
-                float base_fx = cam.focal_x();
-                float base_fy = cam.focal_y();
-                float base_cx = cam.center_x();
-                float base_cy = cam.center_y();
-                int base_width = cam.camera_width();
-                int base_height = cam.camera_height();
-                if (cam.is_undistort_precomputed()) {
-                    const auto& undistort = cam.undistort_params();
-                    base_fx = undistort.dst_fx;
-                    base_fy = undistort.dst_fy;
-                    base_cx = undistort.dst_cx;
-                    base_cy = undistort.dst_cy;
-                    base_width = undistort.dst_width;
-                    base_height = undistort.dst_height;
+                const glm::ivec2 calibrated_extent =
+                    pixel_region ? pixel_region->full_extent : render_size;
+                if (calibrated_extent.x <= 0 || calibrated_extent.y <= 0) {
+                    return std::nullopt;
                 }
-                const float x_scale =
-                    static_cast<float>(render_size.x) / static_cast<float>(std::max(base_width, 1));
-                const float y_scale =
-                    static_cast<float>(render_size.y) / static_cast<float>(std::max(base_height, 1));
+                lfs::rendering::CameraIntrinsics full_intrinsics;
+                if (pixel_region && pixel_region->full_intrinsics) {
+                    full_intrinsics = *pixel_region->full_intrinsics;
+                } else {
+                    float base_fx = cam.focal_x();
+                    float base_fy = cam.focal_y();
+                    float base_cx = cam.center_x();
+                    float base_cy = cam.center_y();
+                    int base_width = cam.camera_width();
+                    int base_height = cam.camera_height();
+                    if (cam.is_undistort_precomputed()) {
+                        const auto& undistort = cam.undistort_params();
+                        base_fx = undistort.dst_fx;
+                        base_fy = undistort.dst_fy;
+                        base_cx = undistort.dst_cx;
+                        base_cy = undistort.dst_cy;
+                        base_width = undistort.dst_width;
+                        base_height = undistort.dst_height;
+                    }
+                    const float x_scale =
+                        static_cast<float>(calibrated_extent.x) /
+                        static_cast<float>(std::max(base_width, 1));
+                    const float y_scale =
+                        static_cast<float>(calibrated_extent.y) /
+                        static_cast<float>(std::max(base_height, 1));
+                    full_intrinsics = {
+                        .focal_x = base_fx * x_scale,
+                        .focal_y = base_fy * y_scale,
+                        .center_x = base_cx * x_scale,
+                        .center_y = base_cy * y_scale};
+                }
+                const glm::vec2 crop_origin =
+                    pixel_region ? glm::vec2(pixel_region->origin) : glm::vec2(0.0f);
                 render_camera.intrinsics = lfs::rendering::CameraIntrinsics{
-                    .focal_x = base_fx * x_scale,
-                    .focal_y = base_fy * y_scale,
-                    .center_x = base_cx * x_scale,
-                    .center_y = base_cy * y_scale};
+                    .focal_x = full_intrinsics.focal_x,
+                    .focal_y = full_intrinsics.focal_y,
+                    .center_x = full_intrinsics.center_x - crop_origin.x,
+                    .center_y = full_intrinsics.center_y - crop_origin.y};
             }
 
             return render_camera;

@@ -705,6 +705,7 @@ namespace lfs::vis::project {
                 required_field("show_pivot", &RenderSettings::show_pivot),
                 enum_field("split_view_mode", &RenderSettings::split_view_mode,
                            0, 3, "Unsupported split-view mode"),
+                optional_field("gt_comparison_actual_size", &RenderSettings::gt_comparison_actual_size),
                 enum_field("gt_comparison_mode", &RenderSettings::gt_comparison_mode,
                            std::numeric_limits<int>::min(),
                            std::numeric_limits<int>::max(),

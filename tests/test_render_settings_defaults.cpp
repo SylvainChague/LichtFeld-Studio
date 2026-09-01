@@ -3,6 +3,7 @@
 
 #include "visualizer/ipc/render_settings_convert.hpp"
 #include "visualizer/ipc/view_context.hpp"
+#include "visualizer/project/session_state.hpp"
 #include "visualizer/rendering/rendering_manager.hpp"
 #include "visualizer/rendering/rendering_types.hpp"
 
@@ -17,6 +18,67 @@ TEST(RenderSettingsDefaults, CameraFrustumsAreDisabledByDefault) {
     EXPECT_FALSE(proxy_settings.show_camera_frustums);
     EXPECT_FLOAT_EQ(render_settings.camera_frustum_scale, 0.25f);
     EXPECT_FLOAT_EQ(proxy_settings.camera_frustum_scale, 0.25f);
+}
+
+TEST(RenderSettingsDefaults, GTComparisonUsesFitByDefault) {
+    const lfs::vis::RenderSettings render_settings;
+    const lfs::vis::RenderSettingsProxy proxy_settings;
+
+    EXPECT_FALSE(render_settings.gt_comparison_actual_size);
+    EXPECT_FALSE(proxy_settings.gt_comparison_actual_size);
+}
+
+TEST(RenderSettingsProxy, GTComparisonActualSizeRoundTrips) {
+    lfs::vis::RenderSettings settings;
+    settings.gt_comparison_actual_size = true;
+
+    const auto proxy = lfs::vis::to_proxy(settings);
+    EXPECT_TRUE(proxy.gt_comparison_actual_size);
+
+    lfs::vis::RenderSettings roundtrip;
+    lfs::vis::apply_proxy(roundtrip, proxy);
+    EXPECT_TRUE(roundtrip.gt_comparison_actual_size);
+}
+
+TEST(RenderSettingsSanitization, NonRgbGTComparisonClearsActualSize) {
+    lfs::vis::RenderSettings settings;
+    settings.gt_comparison_mode = lfs::vis::GTComparisonMode::Normal;
+    settings.gt_comparison_actual_size = true;
+
+    lfs::vis::sanitizeGTComparisonSettings(settings);
+
+    EXPECT_FALSE(settings.gt_comparison_actual_size);
+}
+
+TEST(RenderSettingsSession, GTComparisonActualSizeRoundTripsAndOlderSessionsDefaultToFit) {
+    lfs::vis::RenderSettings settings;
+    settings.gt_comparison_actual_size = true;
+
+    const auto json = lfs::vis::project::renderSettingsToProjectJson(settings);
+    const auto restored =
+        lfs::vis::project::renderSettingsFromProjectJson(json);
+    ASSERT_TRUE(restored);
+    EXPECT_TRUE(restored->gt_comparison_actual_size);
+
+    auto legacy_json = json;
+    legacy_json.erase("gt_comparison_actual_size");
+    const auto legacy =
+        lfs::vis::project::renderSettingsFromProjectJson(legacy_json);
+    ASSERT_TRUE(legacy);
+    EXPECT_FALSE(legacy->gt_comparison_actual_size);
+}
+
+TEST(RenderSettingsSession, NonRgbGTComparisonClearsActualSizeOnLoad) {
+    lfs::vis::RenderSettings settings;
+    settings.gt_comparison_mode = lfs::vis::GTComparisonMode::Depth;
+    settings.gt_comparison_actual_size = true;
+
+    const auto json = lfs::vis::project::renderSettingsToProjectJson(settings);
+    const auto restored =
+        lfs::vis::project::renderSettingsFromProjectJson(json);
+    ASSERT_TRUE(restored);
+    EXPECT_EQ(restored->gt_comparison_mode, lfs::vis::GTComparisonMode::Depth);
+    EXPECT_FALSE(restored->gt_comparison_actual_size);
 }
 
 TEST(RenderSettingsDefaults, SceneReconstructionIsDisabledByDefault) {

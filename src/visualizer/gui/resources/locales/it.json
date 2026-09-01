@@ -1162,6 +1162,7 @@
     "depth_view_tool": "Vista mappa di profondità attiva",
     "depth_view_mode": "Scegli il modo colore della profondità",
     "gt_compare_mode": "Scegli il confronto con la ground truth RGB, delle normali o della profondità",
+    "gt_compare_actual_size": "Mostra la ground truth RGB con un pixel immagine per pixel fisico dello schermo. Non disponibile per normali, profondità, immagini mancanti e camere ortografiche o equirettangolari.",
     "depth_view_range": "Intervallo di visualizzazione della profondità",
     "depth_view_near": "Limite vicino dell'intervallo di profondità",
     "depth_view_far": "Limite lontano dell'intervallo di profondità",

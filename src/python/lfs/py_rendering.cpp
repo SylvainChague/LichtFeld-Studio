@@ -810,6 +810,8 @@ namespace lfs::python {
         add_int_enum(&Proxy::gt_comparison_mode, "gt_comparison_mode", "GT Compare",
                      "Ground-truth comparison payload",
                      {{"RGB", "rgb", 0}, {"Normal", "normal", 1}, {"Depth", "depth", 2}}, 0);
+        add_bool(&Proxy::gt_comparison_actual_size, "gt_comparison_actual_size", "GT Compare 1:1",
+                 "Map one ground-truth image pixel to one physical framebuffer pixel", false);
         add_int_enum(&Proxy::camera_metrics_mode, "camera_metrics_mode", "Camera Metrics",
                      "Compute metrics when jumping to a source camera",
                      {{"Off", "OFF", 0}, {"PSNR", "PSNR", 1}, {"PSNR + SSIM", "PSNR_SSIM", 2}}, 0);

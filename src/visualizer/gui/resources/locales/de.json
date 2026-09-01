@@ -1162,6 +1162,7 @@
     "depth_view_tool": "Aktive Tiefenkartenansicht",
     "depth_view_mode": "Farbmodus der Tiefenkarte wählen",
     "gt_compare_mode": "RGB-, Normalen- oder Tiefen-Referenzvergleich auswählen",
+    "gt_compare_actual_size": "RGB-Referenzdaten mit einem Bildpixel pro physischem Bildschirmpixel anzeigen. Nicht verfügbar für Normalen, Tiefe, fehlende Bilder sowie orthografische oder equirektanguläre Kameras.",
     "depth_view_range": "Visualisierungsbereich der Tiefenkarte",
     "depth_view_near": "Nahe Grenze des Tiefenkartenbereichs",
     "depth_view_far": "Ferne Grenze des Tiefenkartenbereichs",

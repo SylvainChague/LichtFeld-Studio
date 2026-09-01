@@ -444,6 +444,170 @@ namespace lfs::vis {
         EXPECT_FALSE(render_camera->equirectangular);
     }
 
+    TEST(SplitViewServiceTest, ActualSizeCropCentersAndClampsInIntegerPixels) {
+        const auto centered =
+            detail::centerGTComparisonCrop({8192, 6144}, {3840, 2160});
+        EXPECT_EQ(centered.origin, glm::ivec2(2176, 1992));
+        EXPECT_EQ(centered.extent, glm::ivec2(3840, 2160));
+
+        const auto clamped =
+            detail::clampGTComparisonCrop({8192, 6144}, {3840, 2160}, {-20, 9000});
+        EXPECT_EQ(clamped.origin, glm::ivec2(0, 3984));
+        EXPECT_EQ(clamped.extent, glm::ivec2(3840, 2160));
+
+        const auto letterboxed =
+            detail::centerGTComparisonCrop({1000, 3000}, {2000, 1000});
+        EXPECT_EQ(letterboxed.origin, glm::ivec2(0, 1000));
+        EXPECT_EQ(letterboxed.extent, glm::ivec2(1000, 1000));
+
+        const auto resized =
+            detail::centerGTComparisonCrop({8192, 6144}, {2560, 1440});
+        EXPECT_EQ(resized.origin, glm::ivec2(2816, 2352));
+        EXPECT_EQ(resized.extent, glm::ivec2(2560, 1440));
+
+        const auto smaller_than_viewport =
+            detail::centerGTComparisonCrop({1000, 800}, {2000, 1000});
+        EXPECT_EQ(smaller_than_viewport.origin, glm::ivec2(0, 0));
+        EXPECT_EQ(smaller_than_viewport.extent, glm::ivec2(1000, 800));
+    }
+
+    TEST(SplitViewServiceTest, ActualSizeSupportsPerspectiveCameraModelsOnly) {
+        using lfs::core::CameraModelType;
+
+        EXPECT_TRUE(detail::isGTComparisonActualSizeCameraModelSupported(
+            CameraModelType::PINHOLE));
+        EXPECT_TRUE(detail::isGTComparisonActualSizeCameraModelSupported(
+            CameraModelType::FISHEYE));
+        EXPECT_TRUE(detail::isGTComparisonActualSizeCameraModelSupported(
+            CameraModelType::THIN_PRISM_FISHEYE));
+        EXPECT_FALSE(detail::isGTComparisonActualSizeCameraModelSupported(
+            CameraModelType::ORTHO));
+        EXPECT_FALSE(detail::isGTComparisonActualSizeCameraModelSupported(
+            CameraModelType::EQUIRECTANGULAR));
+    }
+
+    TEST(SplitViewServiceTest, ActualSizeCropPreservesFocalLengthAndOffsetsPrincipalPoint) {
+        using lfs::core::Camera;
+        using lfs::core::CameraModelType;
+        using lfs::core::Device;
+        using lfs::core::Tensor;
+
+        Camera camera(
+            Tensor::from_vector(
+                {1.0f, 0.0f, 0.0f,
+                 0.0f, 1.0f, 0.0f,
+                 0.0f, 0.0f, 1.0f},
+                {size_t{3}, size_t{3}},
+                Device::CPU),
+            Tensor::from_vector({0.0f, 0.0f, 0.0f}, {size_t{3}}, Device::CPU),
+            500.0f,
+            600.0f,
+            320.0f,
+            240.0f,
+            Tensor(),
+            Tensor(),
+            CameraModelType::PINHOLE,
+            "test.png",
+            {},
+            {},
+            640,
+            480,
+            8);
+
+        const auto render_camera = detail::buildGTRenderCamera(
+            camera,
+            {320, 240},
+            glm::mat4(1.0f),
+            detail::GTComparisonPixelRegion{
+                .origin = {100, 50},
+                .full_extent = {640, 480}});
+        ASSERT_TRUE(render_camera);
+        ASSERT_TRUE(render_camera->intrinsics);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->focal_x, 500.0f);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->focal_y, 600.0f);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->center_x, 220.0f);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->center_y, 190.0f);
+    }
+
+    TEST(SplitViewServiceTest, ActualSizeCropScalesUndistortedIntrinsicsBeforeOffset) {
+        using lfs::core::Camera;
+        using lfs::core::CameraModelType;
+        using lfs::core::Device;
+        using lfs::core::Tensor;
+
+        Camera camera(
+            Tensor::from_vector(
+                {1.0f, 0.0f, 0.0f,
+                 0.0f, 1.0f, 0.0f,
+                 0.0f, 0.0f, 1.0f},
+                {size_t{3}, size_t{3}},
+                Device::CPU),
+            Tensor::from_vector({0.0f, 0.0f, 0.0f}, {size_t{3}}, Device::CPU),
+            500.0f,
+            600.0f,
+            320.0f,
+            240.0f,
+            Tensor::from_vector({-0.08f, 0.01f}, {size_t{2}}, Device::CPU),
+            Tensor(),
+            CameraModelType::PINHOLE,
+            "test.png",
+            {},
+            {},
+            640,
+            480,
+            9);
+        camera.precompute_undistortion();
+        ASSERT_TRUE(camera.is_undistort_precomputed());
+        const auto& undistort = camera.undistort_params();
+        const auto scaled = lfs::core::scale_undistort_params(
+            undistort, 1001, 751);
+        const glm::ivec2 full_extent{
+            scaled.dst_width,
+            scaled.dst_height};
+        const glm::ivec2 crop_origin{37, 29};
+
+        const auto render_camera = detail::buildGTRenderCamera(
+            camera,
+            {320, 240},
+            glm::mat4(1.0f),
+            detail::GTComparisonPixelRegion{
+                .origin = crop_origin,
+                .full_extent = full_extent,
+                .full_intrinsics = lfs::rendering::CameraIntrinsics{
+                    .focal_x = scaled.dst_fx,
+                    .focal_y = scaled.dst_fy,
+                    .center_x = scaled.dst_cx,
+                    .center_y = scaled.dst_cy}});
+        ASSERT_TRUE(render_camera);
+        ASSERT_TRUE(render_camera->intrinsics);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->focal_x, scaled.dst_fx);
+        EXPECT_FLOAT_EQ(render_camera->intrinsics->focal_y, scaled.dst_fy);
+        EXPECT_FLOAT_EQ(
+            render_camera->intrinsics->center_x,
+            scaled.dst_cx - static_cast<float>(crop_origin.x));
+        EXPECT_FLOAT_EQ(
+            render_camera->intrinsics->center_y,
+            scaled.dst_cy - static_cast<float>(crop_origin.y));
+    }
+
+    TEST(SplitViewServiceTest, ActualSizeTexelLookupIsOneToOneAndHonorsFlip) {
+        const glm::ivec4 rect{20, 10, 4, 3};
+        const glm::ivec2 panel_extent{4, 3};
+
+        EXPECT_EQ(
+            detail::exactGTComparisonTexel({20, 10}, rect, panel_extent, false),
+            glm::ivec2(0, 0));
+        EXPECT_EQ(
+            detail::exactGTComparisonTexel({23, 12}, rect, panel_extent, false),
+            glm::ivec2(3, 2));
+        EXPECT_EQ(
+            detail::exactGTComparisonTexel({20, 10}, rect, panel_extent, true),
+            glm::ivec2(0, 2));
+        EXPECT_EQ(
+            detail::exactGTComparisonTexel({23, 12}, rect, panel_extent, true),
+            glm::ivec2(3, 0));
+    }
+
     TEST(CameraImageLoadTest, PreviewLoadsCanAvoidMutatingCameraImageDimensions) {
         using lfs::core::Camera;
         using lfs::core::CameraModelType;
