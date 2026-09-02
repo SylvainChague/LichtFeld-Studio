@@ -39,6 +39,12 @@ namespace lfs::core {
     load_image_thumbnail(std::filesystem::path p, int max_width,
                          bool* used_exif_thumbnail = nullptr);
 
+    // Decode the native-resolution image directly into owned, contiguous,
+    // unpinned CPU CHW RGB8 storage. This path is intentionally lossless with
+    // respect to the file decoder: it performs no resize, cache lookup,
+    // recompression, flip, or device transfer.
+    LFS_CORE_API Tensor load_image_rgb8_chw_lossless(const std::filesystem::path& path);
+
     LFS_CORE_API std::tuple<uint16_t*, int, int, int>
     load_image_u16(std::filesystem::path p, int res_div = -1, int max_width = 0);
 

@@ -4258,7 +4258,9 @@ namespace lfs::python {
                 return rm && rm->isGTComparisonActualSizeAvailable(
                                  lfs::python::get_scene_manager());
             },
-            "Return whether the selected GT camera supports RGB perspective 1:1 pixel mode.");
+            "Return whether the selected GT camera supports RGB perspective 1:1 pixel mode, "
+            "including usable saved undistortion calibration when distortion is present. "
+            "Legacy projects may require dataset reimport and resave.");
 
         m.def(
             "cycle_gt_comparison_mode",

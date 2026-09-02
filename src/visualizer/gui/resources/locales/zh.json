@@ -1162,7 +1162,7 @@
     "depth_view_tool": "活动深度图视图",
     "depth_view_mode": "选择深度图颜色模式",
     "gt_compare_mode": "选择 RGB、法线或深度真值比较",
-    "gt_compare_actual_size": "以一个图像像素对应一个物理屏幕像素显示 RGB 真值。法线、深度、图像缺失以及正交或等距柱状投影相机不可用。",
+    "gt_compare_actual_size": "以一个图像像素对应一个物理屏幕像素显示 RGB 真值。需要透视相机；对于畸变图像，还需要可用的已保存去畸变标定。旧项目可能需要重新导入并保存数据集。",
     "depth_view_range": "深度图可视化范围",
     "depth_view_near": "深度范围近端",
     "depth_view_far": "深度范围远端",

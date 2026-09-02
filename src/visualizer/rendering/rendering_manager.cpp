@@ -502,24 +502,23 @@ namespace lfs::vis {
                 camera = *first;
             }
         }
-        return camera && camera->has_image() && !camera->image_path().empty() &&
-               detail::isGTComparisonActualSizeCameraModelSupported(
-                   camera->camera_model_type());
+        return camera && detail::isGTComparisonActualSizeAvailable(
+                             *camera, GTComparisonMode::RGB);
     }
 
     void RenderingManager::setGTComparisonCropOrigin(const glm::ivec2 origin) {
-        if (!gt_comparison_actual_size_effective_) {
+        if (!gt_comparison_actual_size_state_.presented) {
             return;
         }
         const auto crop = detail::clampGTComparisonCrop(
-            gt_comparison_full_extent_,
-            gt_comparison_actual_viewport_extent_,
+            gt_comparison_actual_size_state_.full_extent,
+            gt_comparison_actual_size_state_.framebuffer_extent,
             origin);
-        if (!crop.valid() || crop.origin == gt_comparison_crop_origin_) {
+        if (!crop.valid() ||
+            crop.origin == gt_comparison_actual_size_state_.crop.origin) {
             return;
         }
-        gt_comparison_crop_origin_ = crop.origin;
-        gt_comparison_crop_extent_ = crop.extent;
+        gt_comparison_actual_size_state_.crop = crop;
         invalidateGTComparisonActualSizeTile();
         markDirty(DirtyFlag::SPLIT_VIEW);
     }

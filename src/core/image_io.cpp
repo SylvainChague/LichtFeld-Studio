@@ -254,6 +254,34 @@ namespace {
                              : red;
     }
 
+    void interleaved_rgb8_to_planar_in_place(uint8_t* const pixels,
+                                              const size_t pixel_count) {
+        constexpr size_t CHANNELS = 3;
+        if (pixel_count > std::numeric_limits<size_t>::max() / CHANNELS) {
+            throw std::overflow_error("RGB image size overflow");
+        }
+
+        const size_t element_count = pixel_count * CHANNELS;
+        std::vector<bool> visited(element_count, false);
+        const auto destination_index = [pixel_count](const size_t source_index) {
+            return (source_index % CHANNELS) * pixel_count + source_index / CHANNELS;
+        };
+
+        for (size_t start = 0; start < element_count; ++start) {
+            if (visited[start]) {
+                continue;
+            }
+            size_t current = start;
+            uint8_t value = pixels[current];
+            do {
+                visited[current] = true;
+                const size_t next = destination_index(current);
+                std::swap(value, pixels[next]);
+                current = next;
+            } while (current != start);
+        }
+    }
+
     lfs::core::Tensor normalize_image_for_save(lfs::core::Tensor image) {
         if (image.ndim() == 4)
             image = image.squeeze(0); // [B,C,H,W] -> [C,H,W]
@@ -658,6 +686,28 @@ namespace lfs::core {
         if (max_width <= 0)
             throw std::invalid_argument("load_image_thumbnail: max_width must be positive");
         return ::load_image_t<unsigned char>(std::move(p), -1, max_width, true, used_exif_thumbnail);
+    }
+
+    Tensor load_image_rgb8_chw_lossless(const std::filesystem::path& path) {
+        const std::string path_utf8 = path_to_utf8(path);
+        auto [pixels, width, height, channels] = load_image(path, 1, 0);
+        if (!pixels || width <= 0 || height <= 0 || channels != 3) {
+            if (pixels) {
+                free_image(pixels);
+            }
+            throw std::runtime_error("Invalid decoded RGB image: " + path_utf8);
+        }
+
+        std::shared_ptr<void> owner(pixels, [](void* const data) { std::free(data); });
+        const size_t pixel_count =
+            static_cast<size_t>(width) * static_cast<size_t>(height);
+        interleaved_rgb8_to_planar_in_place(pixels, pixel_count);
+        return Tensor::from_external_owner(
+            pixels,
+            {3, static_cast<size_t>(height), static_cast<size_t>(width)},
+            Device::CPU,
+            DataType::UInt8,
+            std::move(owner));
     }
 
     std::tuple<uint16_t*, int, int, int>

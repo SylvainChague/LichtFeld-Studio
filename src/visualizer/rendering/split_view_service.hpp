@@ -17,41 +17,16 @@ namespace lfs::vis {
 
 namespace lfs::core {
     class Camera;
-    enum class CameraModelType;
 } // namespace lfs::core
 
 namespace lfs::vis {
 
     namespace detail {
-        struct GTComparisonCrop {
-            glm::ivec2 origin{0, 0};
-            glm::ivec2 extent{0, 0};
-
-            [[nodiscard]] bool valid() const {
-                return extent.x > 0 && extent.y > 0;
-            }
-        };
-
         struct GTComparisonPixelRegion {
             glm::ivec2 origin{0, 0};
             glm::ivec2 full_extent{0, 0};
             std::optional<lfs::rendering::CameraIntrinsics> full_intrinsics;
         };
-
-        [[nodiscard]] LFS_VIS_API GTComparisonCrop centerGTComparisonCrop(
-            glm::ivec2 full_extent,
-            glm::ivec2 viewport_extent);
-        [[nodiscard]] LFS_VIS_API GTComparisonCrop clampGTComparisonCrop(
-            glm::ivec2 full_extent,
-            glm::ivec2 viewport_extent,
-            glm::ivec2 requested_origin);
-        [[nodiscard]] LFS_VIS_API glm::ivec2 exactGTComparisonTexel(
-            glm::ivec2 framebuffer_pixel,
-            glm::ivec4 content_rect,
-            glm::ivec2 panel_extent,
-            bool flip_y);
-        [[nodiscard]] LFS_VIS_API bool isGTComparisonActualSizeCameraModelSupported(
-            lfs::core::CameraModelType model);
 
         [[nodiscard]] LFS_VIS_API glm::mat4 currentSceneTransform(SceneManager* const scene_manager,
                                                                   const int camera_uid);

@@ -14,6 +14,7 @@
 #include "internal/viewport.hpp"
 #include "python/python_runtime.hpp"
 #include "rendering/coordinate_conventions.hpp"
+#include "rendering/gt_comparison_geometry.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
 #include "tools/tool_base.hpp"
@@ -642,12 +643,9 @@ namespace lfs::vis {
     }
 
     TEST_F(InputControllerFocusTest, GTImagePanConvertsTotalDragToPhysicalPixelsOnce) {
-        const auto origin = detail::gtImagePanCropOrigin(
-            {100, 200},
-            {10.0, 20.0},
-            {13.25, 16.5},
-            {1000, 500},
-            {2000, 1000});
+        const auto scale = detail::physicalScaleForExtents({1000, 500}, {2000, 1000});
+        const auto displacement = detail::roundedPhysicalDrag({3.25, -3.5}, scale);
+        const glm::ivec2 origin = glm::ivec2(100, 200) - displacement;
 
         EXPECT_EQ(origin, glm::ivec2(93, 207));
     }

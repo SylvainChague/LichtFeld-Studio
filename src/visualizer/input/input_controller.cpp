@@ -25,6 +25,7 @@
 #include "operator/operator_registry.hpp"
 #include "python/python_runtime.hpp"
 #include "rendering/coordinate_conventions.hpp"
+#include "rendering/gt_comparison_geometry.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "scene/scene_manager.hpp"
 #include "tools/align_tool.hpp"
@@ -43,31 +44,6 @@
 #include <limits>
 
 namespace lfs::vis {
-
-    namespace detail {
-        glm::ivec2 gtImagePanCropOrigin(
-            const glm::ivec2 start_origin,
-            const glm::dvec2 start_mouse,
-            const glm::dvec2 current_mouse,
-            const glm::ivec2 logical_window_extent,
-            const glm::ivec2 physical_window_extent) {
-            const glm::dvec2 scale{
-                logical_window_extent.x > 0 && physical_window_extent.x > 0
-                    ? static_cast<double>(physical_window_extent.x) /
-                          static_cast<double>(logical_window_extent.x)
-                    : 1.0,
-                logical_window_extent.y > 0 && physical_window_extent.y > 0
-                    ? static_cast<double>(physical_window_extent.y) /
-                          static_cast<double>(logical_window_extent.y)
-                    : 1.0};
-            const glm::dvec2 physical_delta =
-                (current_mouse - start_mouse) * scale;
-            return start_origin -
-                   glm::ivec2{
-                       static_cast<int>(std::lround(physical_delta.x)),
-                       static_cast<int>(std::lround(physical_delta.y))};
-        }
-    } // namespace detail
 
     using namespace lfs::core::events;
 
@@ -958,6 +934,17 @@ namespace lfs::vis {
                         gt_image_pan_start_mouse_ = {x, y};
                         gt_image_pan_start_origin_ =
                             rendering->getGTComparisonCropOrigin();
+                        glm::ivec2 logical_extent{0, 0};
+                        glm::ivec2 physical_extent{0, 0};
+                        if (window_) {
+                            SDL_GetWindowSize(
+                                window_, &logical_extent.x, &logical_extent.y);
+                            SDL_GetWindowSizeInPixels(
+                                window_, &physical_extent.x, &physical_extent.y);
+                        }
+                        gt_image_pan_physical_scale_ =
+                            detail::physicalScaleForExtents(
+                                logical_extent, physical_extent);
                         break;
                     }
                     const int context_camera_id =
@@ -1180,12 +1167,9 @@ namespace lfs::vis {
 
             bool was_dragging = false;
             if (drag_mode_ == DragMode::GTImagePan) {
-                drag_mode_ = DragMode::None;
-                drag_button_ = -1;
-                drag_viewport_ = nullptr;
-                press_selected_camera_frustum_ = false;
-                pressed_camera_frustum_id_ = -1;
-                pressed_camera_frustum_modifiers_ = input::MODIFIER_NONE;
+                if (button == drag_button_) {
+                    clearViewportDragState();
+                }
                 return;
             }
             Viewport* released_viewport = drag_viewport_;
@@ -1549,21 +1533,11 @@ namespace lfs::vis {
             drag_mode_ != DragMode::Splitter) {
             if (drag_mode_ == DragMode::GTImagePan) {
                 if (auto* const rendering = services().renderingOrNull()) {
-                    glm::ivec2 logical_extent{0, 0};
-                    glm::ivec2 physical_extent{0, 0};
-                    if (window_) {
-                        SDL_GetWindowSize(
-                            window_, &logical_extent.x, &logical_extent.y);
-                        SDL_GetWindowSizeInPixels(
-                            window_, &physical_extent.x, &physical_extent.y);
-                    }
                     rendering->setGTComparisonCropOrigin(
-                        detail::gtImagePanCropOrigin(
-                            gt_image_pan_start_origin_,
-                            gt_image_pan_start_mouse_,
-                            current_pos,
-                            logical_extent,
-                            physical_extent));
+                        gt_image_pan_start_origin_ -
+                        detail::roundedPhysicalDrag(
+                            current_pos - gt_image_pan_start_mouse_,
+                            gt_image_pan_physical_scale_));
                 }
                 return;
             }
@@ -2256,12 +2230,7 @@ namespace lfs::vis {
         }
 
         if (drag_mode_ == DragMode::GTImagePan && drag_button_released) {
-            drag_mode_ = DragMode::None;
-            drag_button_ = -1;
-            drag_viewport_ = nullptr;
-            press_selected_camera_frustum_ = false;
-            pressed_camera_frustum_id_ = -1;
-            pressed_camera_frustum_modifiers_ = input::MODIFIER_NONE;
+            clearViewportDragState();
         }
 
         if (drag_mode_ == DragMode::Rotate && drag_button_released) {
@@ -3016,6 +2985,9 @@ namespace lfs::vis {
         drag_button_ = -1;
         drag_viewport_ = nullptr;
         drag_split_panel_ = SplitViewPanelId::Left;
+        gt_image_pan_start_mouse_ = {0.0, 0.0};
+        gt_image_pan_start_origin_ = {0, 0};
+        gt_image_pan_physical_scale_ = {1.0, 1.0};
         pending_click_drag_ = {};
         forced_mouse_press_action_ = input::Action::NONE;
         is_node_rect_dragging_ = false;

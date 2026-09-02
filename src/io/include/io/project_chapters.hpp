@@ -360,6 +360,27 @@ namespace lfs::io::project {
         friend bool operator==(const EllipsoidRecord&, const EllipsoidRecord&) = default;
     };
 
+    struct CameraCalibrationRecord {
+        float focal_x = 0.0f;
+        float focal_y = 0.0f;
+        float center_x = 0.0f;
+        float center_y = 0.0f;
+        std::int32_t width = 0;
+        std::int32_t height = 0;
+
+        friend bool operator==(const CameraCalibrationRecord&,
+                               const CameraCalibrationRecord&) = default;
+    };
+
+    struct CameraUndistortionRecord {
+        CameraCalibrationRecord source;
+        CameraCalibrationRecord destination;
+        bool prepared = false;
+
+        friend bool operator==(const CameraUndistortionRecord&,
+                               const CameraUndistortionRecord&) = default;
+    };
+
     struct CameraRecord {
         std::int32_t uid = -1;
         std::int32_t camera_id = 0;
@@ -387,6 +408,7 @@ namespace lfs::io::project {
         // camera objects; parsers default this to true.
         bool has_image = true;
         std::string split = "train";
+        std::optional<CameraUndistortionRecord> undistortion;
 
         friend bool operator==(const CameraRecord&, const CameraRecord&) = default;
     };

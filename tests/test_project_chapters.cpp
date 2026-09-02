@@ -674,6 +674,170 @@ namespace {
         return camera;
     }
 
+    CameraUndistortionRecord make_chapter_undistortion(const bool prepared) {
+        return CameraUndistortionRecord{
+            .source = CameraCalibrationRecord{
+                .focal_x = 801.25f,
+                .focal_y = 799.75f,
+                .center_x = 639.5f,
+                .center_y = 359.25f,
+                .width = 1280,
+                .height = 720},
+            .destination = CameraCalibrationRecord{
+                .focal_x = 733.125f,
+                .focal_y = 731.875f,
+                .center_x = 602.75f,
+                .center_y = 341.5f,
+                .width = 1207,
+                .height = 683},
+            .prepared = prepared};
+    }
+
+    void use_current_undistortion_calibration(CameraRecord& camera) {
+        ASSERT_TRUE(camera.undistortion);
+        const CameraCalibrationRecord& current =
+            camera.undistortion->prepared ? camera.undistortion->destination
+                                          : camera.undistortion->source;
+        camera.focal_x = current.focal_x;
+        camera.focal_y = current.focal_y;
+        camera.center_x = current.center_x;
+        camera.center_y = current.center_y;
+        camera.camera_width = current.width;
+        camera.camera_height = current.height;
+    }
+
+    TEST(ProjectChapterTest,
+         CameraUndistortionRoundTripsPreparedAndPrecomputedForAllSupportedModels) {
+        const auto node_id =
+            uuid_literal("53000000-0000-4000-8000-000000000020");
+        for (const std::int32_t model : {0, 2, 4}) {
+            for (const bool prepared : {false, true}) {
+                SCOPED_TRACE(model);
+                SCOPED_TRACE(prepared);
+                auto camera = make_chapter_camera();
+                camera.camera_model_type = model;
+                camera.undistortion = make_chapter_undistortion(prepared);
+                if (model == 0) {
+                    camera.radial_distortion = {-0.08f, 0.01f};
+                } else if (model == 2) {
+                    camera.radial_distortion = {0.04f, -0.005f, 0.001f, -0.0002f};
+                } else {
+                    camera.radial_distortion = {0.03f, -0.004f, 0.001f, -0.0002f};
+                    camera.tangential_distortion = {
+                        0.001f, -0.0015f, 0.0005f, -0.0004f};
+                }
+                use_current_undistortion_calibration(camera);
+
+                SceneGraphChapter chapter;
+                ASSERT_TRUE(chapter.upsert_node(SceneNodeRecord{
+                    .uuid = node_id,
+                    .type = "camera",
+                    .name = "calibrated-camera",
+                    .child_order = 0,
+                    .camera = camera}));
+                auto reparsed = SceneGraphChapter::from_bytes(chapter.to_bytes());
+                ASSERT_TRUE(reparsed)
+                    << lfs::format_for_developer(reparsed.error());
+                auto found = reparsed->find(node_id);
+                ASSERT_TRUE(found)
+                    << lfs::format_for_developer(found.error());
+                ASSERT_TRUE(*found);
+                ASSERT_TRUE((*found)->camera);
+                EXPECT_EQ(*(*found)->camera, camera);
+                ASSERT_TRUE((*found)->camera->undistortion);
+                EXPECT_EQ(
+                    (*found)->camera->undistortion->destination,
+                    make_chapter_undistortion(prepared).destination);
+            }
+        }
+    }
+
+    TEST(ProjectChapterTest, LegacyDistortedCameraWithoutCalibrationStillParses) {
+        const auto node_id =
+            uuid_literal("53000000-0000-4000-8000-000000000021");
+        auto camera = make_chapter_camera();
+        camera.camera_model_type = 0;
+        camera.radial_distortion = {-0.08f, 0.01f};
+        ASSERT_FALSE(camera.undistortion);
+
+        SceneGraphChapter chapter;
+        ASSERT_TRUE(chapter.upsert_node(SceneNodeRecord{
+            .uuid = node_id,
+            .type = "camera",
+            .name = "legacy-distorted-camera",
+            .child_order = 0,
+            .camera = camera}));
+        auto dumped = lfs::io::JsonChapterDom::Json::parse(chapter.dom().dump());
+        ASSERT_FALSE(dumped["nodes"][0]["camera"].contains("undistortion"));
+
+        auto reparsed = SceneGraphChapter::parse(dumped.dump());
+        ASSERT_TRUE(reparsed)
+            << lfs::format_for_developer(reparsed.error());
+        auto found = reparsed->find(node_id);
+        ASSERT_TRUE(found && *found && (*found)->camera);
+        EXPECT_FALSE((*found)->camera->undistortion);
+    }
+
+    TEST(ProjectChapterTest, InvalidCameraUndistortionRecordsFailAsDataLoss) {
+        const auto node_id =
+            uuid_literal("53000000-0000-4000-8000-000000000022");
+        auto camera = make_chapter_camera();
+        camera.camera_model_type = 0;
+        camera.radial_distortion = {-0.08f, 0.01f};
+        camera.undistortion = make_chapter_undistortion(true);
+        use_current_undistortion_calibration(camera);
+
+        SceneGraphChapter chapter;
+        ASSERT_TRUE(chapter.upsert_node(SceneNodeRecord{
+            .uuid = node_id,
+            .type = "camera",
+            .name = "invalid-calibration-base",
+            .child_order = 0,
+            .camera = camera}));
+        using Json = lfs::io::JsonChapterDom::Json;
+        const Json baseline = Json::parse(chapter.dom().dump());
+        const auto expect_data_loss = [](Json candidate) {
+            auto parsed = SceneGraphChapter::parse(candidate.dump());
+            ASSERT_FALSE(parsed);
+            EXPECT_EQ(parsed.error().code(), lfs::ErrorCode::DataLoss);
+        };
+
+        auto partial = baseline;
+        partial["nodes"][0]["camera"]["undistortion"]["source"].erase("width");
+        expect_data_loss(std::move(partial));
+
+        auto inconsistent = baseline;
+        inconsistent["nodes"][0]["camera"]["focal_x"] = 734.125f;
+        expect_data_loss(std::move(inconsistent));
+
+        auto nonpositive = baseline;
+        nonpositive["nodes"][0]["camera"]["undistortion"]["destination"]
+                   ["focal_y"] = 0.0f;
+        expect_data_loss(std::move(nonpositive));
+
+        auto nonfinite = baseline;
+        nonfinite["nodes"][0]["camera"]["undistortion"]["source"]
+                 ["center_x"] = nullptr;
+        expect_data_loss(std::move(nonfinite));
+
+        auto incompatible_model = baseline;
+        incompatible_model["nodes"][0]["camera"]["camera_model_type"] = 1;
+        expect_data_loss(std::move(incompatible_model));
+
+        auto no_distortion = baseline;
+        no_distortion["nodes"][0]["camera"]["radial_distortion"] = Json::array();
+        no_distortion["nodes"][0]["camera"]["tangential_distortion"] = Json::array();
+        expect_data_loss(std::move(no_distortion));
+
+        auto missing_prepared = baseline;
+        missing_prepared["nodes"][0]["camera"]["undistortion"].erase("prepared");
+        expect_data_loss(std::move(missing_prepared));
+
+        auto null_record = baseline;
+        null_record["nodes"][0]["camera"]["undistortion"] = nullptr;
+        expect_data_loss(std::move(null_record));
+    }
+
     TEST(ProjectChapterTest,
          SceneGraphCameraVisibleAndTrainingEnabledRoundTripSeparatesHasImage) {
         const auto hidden_id =

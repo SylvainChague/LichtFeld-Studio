@@ -37,15 +37,6 @@ namespace lfs::vis {
     class ToolContext;
     class Visualizer;
 
-    namespace detail {
-        [[nodiscard]] LFS_VIS_API glm::ivec2 gtImagePanCropOrigin(
-            glm::ivec2 start_origin,
-            glm::dvec2 start_mouse,
-            glm::dvec2 current_mouse,
-            glm::ivec2 logical_window_extent,
-            glm::ivec2 physical_window_extent);
-    } // namespace detail
-
     class LFS_VIS_API InputController {
     public:
         enum class CameraNavigationMode {
@@ -268,6 +259,7 @@ namespace lfs::vis {
         double splitter_start_x_ = 0.0;
         glm::dvec2 gt_image_pan_start_mouse_{0.0, 0.0};
         glm::ivec2 gt_image_pan_start_origin_{0, 0};
+        glm::dvec2 gt_image_pan_physical_scale_{1.0, 1.0};
         Viewport* drag_viewport_ = nullptr;
         Viewport* orbit_coast_viewport_ = nullptr;
         Viewport* pan_coast_viewport_ = nullptr;

@@ -204,6 +204,18 @@
     image-color: @{controls.selected_icon};
 }
 
+#gt-compare-mode-block .viewport-gt-compare-actual-size {
+    color: @{text};
+}
+
+#gt-compare-mode-block .viewport-gt-compare-actual-size.selected {
+    color: @{background};
+}
+
+#gt-compare-mode-block .viewport-gt-compare-actual-size.selected.disabled {
+    color: @{text_dim};
+}
+
 .icon-btn.disabled,
 .icon-btn.disabled:hover,
 .icon-btn.disabled:active {

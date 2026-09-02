@@ -38,7 +38,6 @@ class GTCompareControlsController:
         "gt_compare_mode_value",
         "gt_compare_actual_size",
         "gt_compare_actual_size_available",
-        "gt_compare_actual_size_tooltip",
     )
 
     def __init__(self):
@@ -64,15 +63,6 @@ class GTCompareControlsController:
         model.bind_func(
             "gt_compare_actual_size_available",
             lambda: self._actual_size_available,
-        )
-        model.bind_func(
-            "gt_compare_actual_size_tooltip",
-            lambda: _ui_label(
-                "tooltip.gt_compare_actual_size",
-                "Show RGB ground truth at one image pixel per physical display pixel. "
-                "Unavailable for normal, depth, missing images, and orthographic or "
-                "equirectangular cameras.",
-            ),
         )
         model.bind_event(
             "gt_compare_toggle_actual_size",
@@ -106,9 +96,7 @@ class GTCompareControlsController:
 
         self._mode = self._read_mode()
         self._actual_size_available = self._read_actual_size_available()
-        self._actual_size = (
-            self._actual_size_available and self._read_actual_size()
-        )
+        self._actual_size = self._read_actual_size()
         state_key = (
             RuntimeState.language_generation.value,
             self._mode,
@@ -186,9 +174,7 @@ class GTCompareControlsController:
             except Exception:
                 pass
         self._actual_size_available = self._read_actual_size_available()
-        self._actual_size = (
-            self._actual_size_available and self._read_actual_size()
-        )
+        self._actual_size = self._read_actual_size()
         self._dirty_all()
 
     def _dirty_all(self):

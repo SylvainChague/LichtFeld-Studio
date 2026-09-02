@@ -17,8 +17,10 @@
 #include "rendering/coordinate_conventions.hpp"
 #include "visualizer/gui_capabilities.hpp"
 #include "visualizer/rendering/gt_comparison_cache_utils.hpp"
+#include "visualizer/rendering/gt_comparison_geometry.hpp"
 #include "visualizer/rendering/render_pass.hpp"
 #include "visualizer/rendering/rendering_manager.hpp"
+#include "visualizer/rendering/split_capture_compositor.hpp"
 #include "visualizer/rendering/split_view_composition.hpp"
 #include "visualizer/rendering/split_view_service.hpp"
 #include "visualizer/rendering/viewport_artifact_service.hpp"
@@ -35,7 +37,10 @@
 #include <filesystem>
 #include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
+#include <stdexcept>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace lfs::vis {
@@ -144,6 +149,26 @@ namespace lfs::vis {
         bool has_cuda_device() {
             int device_count = 0;
             return cudaGetDeviceCount(&device_count) == cudaSuccess && device_count > 0;
+        }
+
+        void writeU8Image(const std::filesystem::path& path,
+                          const int width,
+                          const int height,
+                          const int channels,
+                          std::vector<std::uint8_t> pixels,
+                          const int jpeg_quality = 100) {
+            if (pixels.size() != static_cast<std::size_t>(width) * height * channels) {
+                throw std::invalid_argument("test image byte count does not match its shape");
+            }
+            auto image = lfs::core::Tensor::from_blob(
+                             pixels.data(),
+                             {static_cast<std::size_t>(height),
+                              static_cast<std::size_t>(width),
+                              static_cast<std::size_t>(channels)},
+                             lfs::core::Device::CPU,
+                             lfs::core::DataType::UInt8)
+                             .clone();
+            lfs::core::save_image_u8(path, std::move(image), jpeg_quality);
         }
     } // namespace
 
@@ -471,6 +496,32 @@ namespace lfs::vis {
         EXPECT_EQ(smaller_than_viewport.extent, glm::ivec2(1000, 800));
     }
 
+    TEST(SplitViewServiceTest, ActualSizeGeometryUsesPhysicalEdgesAndOneRoundedDrag) {
+        const glm::ivec2 physical_extent{2001, 1001};
+        const glm::ivec2 logical_extent{1000, 500};
+        const auto physical_rect =
+            detail::centeredGTComparisonContentRect(physical_extent, {1000, 800});
+        EXPECT_EQ(physical_rect, glm::ivec4(500, 100, 1000, 800));
+
+        const auto logical_rect = detail::physicalToLogicalContentRect(
+            physical_rect, physical_extent, logical_extent);
+        EXPECT_NEAR(logical_rect.x, 500.0 * 1000.0 / 2001.0, 1.0e-4);
+        EXPECT_NEAR(logical_rect.y, 100.0 * 500.0 / 1001.0, 1.0e-4);
+        EXPECT_NEAR(logical_rect.z, 1000.0 * 1000.0 / 2001.0, 1.0e-4);
+        EXPECT_NEAR(logical_rect.w, 800.0 * 500.0 / 1001.0, 1.0e-4);
+
+        EXPECT_EQ(splitViewDividerPixel(200, 0.25f), 50);
+        EXPECT_EQ(splitViewDividerPixel(200, 0.5f), 100);
+        EXPECT_EQ(splitViewDividerPixel(200, 0.75f), 150);
+
+        const auto scale = detail::physicalScaleForExtents({1000, 500}, {2000, 750});
+        EXPECT_DOUBLE_EQ(scale.x, 2.0);
+        EXPECT_DOUBLE_EQ(scale.y, 1.5);
+        EXPECT_EQ(
+            detail::roundedPhysicalDrag({2.25, -5.0 / 3.0}, scale),
+            glm::ivec2(5, -3));
+    }
+
     TEST(SplitViewServiceTest, ActualSizeSupportsPerspectiveCameraModelsOnly) {
         using lfs::core::CameraModelType;
 
@@ -590,22 +641,161 @@ namespace lfs::vis {
             scaled.dst_cy - static_cast<float>(crop_origin.y));
     }
 
-    TEST(SplitViewServiceTest, ActualSizeTexelLookupIsOneToOneAndHonorsFlip) {
-        const glm::ivec4 rect{20, 10, 4, 3};
-        const glm::ivec2 panel_extent{4, 3};
+    TEST(SplitViewServiceTest, RestoredUndistortionCalibrationSurvivesTransformCopies) {
+        using lfs::core::Camera;
+        using lfs::core::CameraCalibration;
+        using lfs::core::CameraModelType;
+        using lfs::core::Device;
+        using lfs::core::Tensor;
 
-        EXPECT_EQ(
-            detail::exactGTComparisonTexel({20, 10}, rect, panel_extent, false),
-            glm::ivec2(0, 0));
-        EXPECT_EQ(
-            detail::exactGTComparisonTexel({23, 12}, rect, panel_extent, false),
-            glm::ivec2(3, 2));
-        EXPECT_EQ(
-            detail::exactGTComparisonTexel({20, 10}, rect, panel_extent, true),
-            glm::ivec2(0, 2));
-        EXPECT_EQ(
-            detail::exactGTComparisonTexel({23, 12}, rect, panel_extent, true),
-            glm::ivec2(3, 0));
+        const auto rotation = Tensor::from_vector(
+            {1.0f, 0.0f, 0.0f,
+             0.0f, 1.0f, 0.0f,
+             0.0f, 0.0f, 1.0f},
+            {size_t{3}, size_t{3}}, Device::CPU);
+        const auto translation =
+            Tensor::from_vector({0.0f, 0.0f, 0.0f}, {size_t{3}}, Device::CPU);
+        const CameraCalibration source{
+            .fx = 801.25f,
+            .fy = 799.75f,
+            .cx = 639.5f,
+            .cy = 359.25f,
+            .width = 1280,
+            .height = 720};
+        const CameraCalibration destination{
+            .fx = 733.125f,
+            .fy = 731.875f,
+            .cx = 602.75f,
+            .cy = 341.5f,
+            .width = 1207,
+            .height = 683};
+
+        const std::array models{
+            CameraModelType::PINHOLE,
+            CameraModelType::FISHEYE,
+            CameraModelType::THIN_PRISM_FISHEYE};
+        for (const auto model : models) {
+            const auto radial = model == CameraModelType::PINHOLE
+                                    ? Tensor::from_vector({-0.08f, 0.01f}, {size_t{2}}, Device::CPU)
+                                    : Tensor::from_vector(
+                                          {0.04f, -0.005f, 0.001f, -0.0002f},
+                                          {size_t{4}}, Device::CPU);
+            const auto tangential = model == CameraModelType::THIN_PRISM_FISHEYE
+                                        ? Tensor::from_vector(
+                                              {0.001f, -0.0015f, 0.0005f, -0.0004f},
+                                              {size_t{4}}, Device::CPU)
+                                        : Tensor();
+            for (const bool prepared : {false, true}) {
+                SCOPED_TRACE(static_cast<int>(model));
+                SCOPED_TRACE(prepared);
+                Camera camera(
+                    rotation, translation,
+                    source.fx, source.fy, source.cx, source.cy,
+                    radial, tangential, model,
+                    "calibration.png", "calibration.png", {},
+                    source.width, source.height, 101);
+                camera.restore_undistortion_state(source, destination, prepared);
+
+                ASSERT_TRUE(camera.is_undistort_precomputed());
+                EXPECT_EQ(camera.is_undistort_prepared(), prepared);
+                const auto& params = camera.undistort_params();
+                EXPECT_FLOAT_EQ(params.src_fx, source.fx);
+                EXPECT_FLOAT_EQ(params.src_fy, source.fy);
+                EXPECT_FLOAT_EQ(params.src_cx, source.cx);
+                EXPECT_FLOAT_EQ(params.src_cy, source.cy);
+                EXPECT_EQ(params.src_width, source.width);
+                EXPECT_EQ(params.src_height, source.height);
+                EXPECT_FLOAT_EQ(params.dst_fx, destination.fx);
+                EXPECT_FLOAT_EQ(params.dst_fy, destination.fy);
+                EXPECT_FLOAT_EQ(params.dst_cx, destination.cx);
+                EXPECT_FLOAT_EQ(params.dst_cy, destination.cy);
+                EXPECT_EQ(params.dst_width, destination.width);
+                EXPECT_EQ(params.dst_height, destination.height);
+
+                Camera transformed(camera, camera.world_view_transform());
+                EXPECT_TRUE(transformed.is_undistort_precomputed());
+                EXPECT_EQ(transformed.is_undistort_prepared(), prepared);
+                EXPECT_EQ(transformed.undistort_params().src_width, source.width);
+                EXPECT_EQ(transformed.undistort_params().dst_width, destination.width);
+                EXPECT_FLOAT_EQ(transformed.undistort_params().dst_fx, destination.fx);
+                const auto& current = prepared ? destination : source;
+                EXPECT_FLOAT_EQ(transformed.focal_x(), current.fx);
+                EXPECT_FLOAT_EQ(transformed.focal_y(), current.fy);
+                EXPECT_FLOAT_EQ(transformed.center_x(), current.cx);
+                EXPECT_FLOAT_EQ(transformed.center_y(), current.cy);
+                EXPECT_EQ(transformed.camera_width(), current.width);
+                EXPECT_EQ(transformed.camera_height(), current.height);
+            }
+        }
+    }
+
+    TEST(SplitViewServiceTest, ActualSizeCaptureUsesExactTexelsFlipAndLetterbox) {
+        constexpr int panel_width = 8;
+        constexpr int panel_height = 6;
+        constexpr std::size_t panel_pixels = panel_width * panel_height;
+        std::vector<float> left_values(3 * panel_pixels);
+        std::vector<float> right_values(3 * panel_pixels);
+        for (int channel = 0; channel < 3; ++channel) {
+            for (int y = 0; y < panel_height; ++y) {
+                for (int x = 0; x < panel_width; ++x) {
+                    const auto index = static_cast<std::size_t>(channel) * panel_pixels +
+                                       static_cast<std::size_t>(y) * panel_width + x;
+                    left_values[index] = 0.1f + channel * 0.2f + y * 0.01f + x * 0.001f;
+                    right_values[index] = 0.5f + channel * 0.1f + y * 0.01f + x * 0.001f;
+                }
+            }
+        }
+        auto left = std::make_shared<lfs::core::Tensor>(lfs::core::Tensor::from_vector(
+            left_values, {3, panel_height, panel_width}, lfs::core::Device::CPU));
+        auto right = std::make_shared<lfs::core::Tensor>(lfs::core::Tensor::from_vector(
+            right_values, {3, panel_height, panel_width}, lfs::core::Device::CPU));
+
+        VulkanSplitViewParams params{
+            .enabled = true,
+            .left = {.image = left},
+            .right = {.image = right, .flip_y = true},
+            .split_position = 0.5f,
+            .content_rect = {2, 1, panel_width, panel_height},
+            .coordinate_extent = {12, 8},
+            .background = {0.01f, 0.02f, 0.03f},
+            .exact_texel_sampling = true};
+        const auto output = composeSplitCaptureCpu(params, {12, 8});
+        ASSERT_TRUE(output && output->is_valid());
+        const float* data = output->ptr<float>();
+        constexpr std::size_t output_pixels = 12 * 8;
+        const auto at = [&](const int channel, const int x, const int y) {
+            return data[static_cast<std::size_t>(channel) * output_pixels +
+                        static_cast<std::size_t>(y) * 12 + x];
+        };
+
+        EXPECT_FLOAT_EQ(at(0, 0, 0), 0.01f);
+        EXPECT_FLOAT_EQ(at(1, 0, 0), 0.02f);
+        EXPECT_FLOAT_EQ(at(0, 2, 1), left_values[0]);
+        EXPECT_FLOAT_EQ(at(0, 3, 6), left_values[5 * panel_width + 1]);
+        EXPECT_FLOAT_EQ(at(0, 8, 1), right_values[5 * panel_width + 6]);
+        EXPECT_FLOAT_EQ(at(2, 9, 6), right_values[2 * panel_pixels + 7]);
+        EXPECT_NEAR(at(0, 5, 1), 0.29f * 0.8f, 1.0e-6f);
+    }
+
+    TEST(SplitViewServiceTest, FitCaptureRetainsLinearSampling) {
+        const std::vector<float> values{
+            0.0f, 1.0f, 2.0f, 3.0f,
+            0.0f, 1.0f, 2.0f, 3.0f,
+            0.0f, 1.0f, 2.0f, 3.0f};
+        auto image = std::make_shared<lfs::core::Tensor>(lfs::core::Tensor::from_vector(
+            values, {3, 2, 2}, lfs::core::Device::CPU));
+        VulkanSplitViewParams params{
+            .enabled = true,
+            .left = {.image = image},
+            .right = {.image = image},
+            .split_position = 0.75f,
+            .content_rect = {0, 0, 10, 6},
+            .coordinate_extent = {10, 6},
+            .exact_texel_sampling = false};
+        const auto output = composeSplitCaptureCpu(params, {10, 6});
+        ASSERT_TRUE(output && output->is_valid());
+        const float* data = output->ptr<float>();
+        EXPECT_NEAR(data[11], 0.2f, 1.0e-6f);
     }
 
     TEST(CameraImageLoadTest, PreviewLoadsCanAvoidMutatingCameraImageDimensions) {
@@ -659,6 +849,112 @@ namespace lfs::vis {
         EXPECT_EQ(camera.image_height(), 3);
 
         std::filesystem::remove(image_path);
+    }
+
+    TEST(CameraImageLoadTest, LosslessRgb8LoaderPreservesNativeBytesAndChannelPolicy) {
+        using lfs::core::DataType;
+        using lfs::core::Device;
+        using lfs::core::TensorShape;
+
+        constexpr int width = 5;
+        constexpr int height = 2;
+        constexpr std::size_t pixel_count = width * height;
+        const auto stamp = std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        const auto root = std::filesystem::temp_directory_path() /
+                          ("lfs_gt_lossless_" + stamp);
+        std::filesystem::create_directories(root);
+
+        std::vector<std::uint8_t> gray(pixel_count);
+        std::vector<std::uint8_t> two_channel(pixel_count * 2);
+        std::vector<std::uint8_t> rgb(pixel_count * 3);
+        std::vector<std::uint8_t> rgba(pixel_count * 4);
+        for (std::size_t index = 0; index < pixel_count; ++index) {
+            gray[index] = static_cast<std::uint8_t>(11 + index);
+            two_channel[index * 2] = static_cast<std::uint8_t>(21 + index);
+            two_channel[index * 2 + 1] = static_cast<std::uint8_t>(101 + index);
+            rgb[index * 3] = static_cast<std::uint8_t>(31 + index);
+            rgb[index * 3 + 1] = static_cast<std::uint8_t>(111 + index);
+            rgb[index * 3 + 2] = static_cast<std::uint8_t>(211 - index);
+            rgba[index * 4] = static_cast<std::uint8_t>(41 + index);
+            rgba[index * 4 + 1] = static_cast<std::uint8_t>(121 + index);
+            rgba[index * 4 + 2] = static_cast<std::uint8_t>(221 - index);
+            rgba[index * 4 + 3] = static_cast<std::uint8_t>(7 + index);
+        }
+
+        const auto gray_path = root / "gray.png";
+        const auto two_path = root / "two.png";
+        const auto rgb_path = root / "rgb.png";
+        const auto rgba_path = root / "rgba.png";
+        const auto jpeg_path = root / "rgb.jpg";
+        ASSERT_NO_THROW(writeU8Image(gray_path, width, height, 1, gray));
+        ASSERT_NO_THROW(writeU8Image(two_path, width, height, 2, two_channel));
+        ASSERT_NO_THROW(writeU8Image(rgb_path, width, height, 3, rgb));
+        ASSERT_NO_THROW(writeU8Image(rgba_path, width, height, 4, rgba));
+        ASSERT_NO_THROW(writeU8Image(jpeg_path, width, height, 3, rgb));
+
+        const auto loaded_rgb = lfs::core::load_image_rgb8_chw_lossless(rgb_path);
+        const auto repeated_rgb = lfs::core::load_image_rgb8_chw_lossless(rgb_path);
+        ASSERT_TRUE(loaded_rgb.is_valid());
+        EXPECT_EQ(loaded_rgb.device(), Device::CPU);
+        EXPECT_EQ(loaded_rgb.dtype(), DataType::UInt8);
+        EXPECT_EQ(loaded_rgb.shape(), TensorShape({size_t{3}, size_t{2}, size_t{5}}));
+        EXPECT_TRUE(loaded_rgb.is_contiguous());
+        EXPECT_TRUE(loaded_rgb.owns_memory());
+        EXPECT_FALSE(loaded_rgb.is_view());
+        EXPECT_EQ(loaded_rgb.stream(), nullptr);
+        EXPECT_EQ(loaded_rgb.to_vector_uint8(), repeated_rgb.to_vector_uint8());
+
+        const auto expect_channels = [&](const std::filesystem::path& path,
+                                         const std::vector<std::uint8_t>& expected_r,
+                                         const std::vector<std::uint8_t>& expected_g,
+                                         const std::vector<std::uint8_t>& expected_b) {
+            const auto loaded = lfs::core::load_image_rgb8_chw_lossless(path);
+            const auto values = loaded.to_vector_uint8();
+            ASSERT_EQ(values.size(), 3 * pixel_count);
+            for (std::size_t index = 0; index < pixel_count; ++index) {
+                EXPECT_EQ(values[index], expected_r[index]);
+                EXPECT_EQ(values[pixel_count + index], expected_g[index]);
+                EXPECT_EQ(values[2 * pixel_count + index], expected_b[index]);
+            }
+        };
+
+        expect_channels(gray_path, gray, gray, gray);
+        std::vector<std::uint8_t> two_r(pixel_count);
+        std::vector<std::uint8_t> two_g(pixel_count);
+        std::vector<std::uint8_t> two_b(pixel_count);
+        std::vector<std::uint8_t> rgb_r(pixel_count);
+        std::vector<std::uint8_t> rgb_g(pixel_count);
+        std::vector<std::uint8_t> rgb_b(pixel_count);
+        std::vector<std::uint8_t> rgba_r(pixel_count);
+        std::vector<std::uint8_t> rgba_g(pixel_count);
+        std::vector<std::uint8_t> rgba_b(pixel_count);
+        for (std::size_t index = 0; index < pixel_count; ++index) {
+            two_r[index] = two_channel[index * 2];
+            two_g[index] = two_channel[index * 2 + 1];
+            two_b[index] = static_cast<std::uint8_t>(
+                (static_cast<std::uint16_t>(two_r[index]) + two_g[index]) / 2u);
+            rgb_r[index] = rgb[index * 3];
+            rgb_g[index] = rgb[index * 3 + 1];
+            rgb_b[index] = rgb[index * 3 + 2];
+            rgba_r[index] = rgba[index * 4];
+            rgba_g[index] = rgba[index * 4 + 1];
+            rgba_b[index] = rgba[index * 4 + 2];
+        }
+        expect_channels(two_path, two_r, two_g, two_b);
+        expect_channels(rgb_path, rgb_r, rgb_g, rgb_b);
+        expect_channels(rgba_path, rgba_r, rgba_g, rgba_b);
+
+        const auto jpeg_first =
+            lfs::core::load_image_rgb8_chw_lossless(jpeg_path).to_vector_uint8();
+        const auto jpeg_second =
+            lfs::core::load_image_rgb8_chw_lossless(jpeg_path).to_vector_uint8();
+        EXPECT_EQ(jpeg_first, jpeg_second);
+        EXPECT_THROW(
+            (void)lfs::core::load_image_rgb8_chw_lossless(root / "missing.png"),
+            std::runtime_error);
+
+        std::filesystem::remove_all(root);
     }
 
     TEST(SplitViewServiceTest, SharedCameraPoseHelperNormalizesSceneRotationAndAppliesVisualizerAxes) {

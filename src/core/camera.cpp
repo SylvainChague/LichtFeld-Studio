@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <cuda_runtime.h>
 #include <format>
 #include <stdexcept>
@@ -304,7 +305,10 @@ namespace lfs::core {
           _image_size_loaded(other._image_size_loaded),
           _cam_position(other._cam_position),
           _FoVx(other._FoVx),
-          _FoVy(other._FoVy) {
+          _FoVy(other._FoVy),
+          _undistort_precomputed(other._undistort_precomputed),
+          _undistort_prepared(other._undistort_prepared),
+          _undistort_params(other._undistort_params) {
         _world_view_transform = transform;
         _sfm_observations = other._sfm_observations;
 
@@ -887,6 +891,60 @@ namespace lfs::core {
         _FoVx = focal2fov(_focal_x, _camera_width);
         _FoVy = focal2fov(_focal_y, _camera_height);
         _undistort_prepared = true;
+    }
+
+    void Camera::restore_undistortion_state(
+        const CameraCalibration& source,
+        const CameraCalibration& destination,
+        const bool prepared) {
+        const auto valid = [](const CameraCalibration& calibration) {
+            return std::isfinite(calibration.fx) && calibration.fx > 0.0f &&
+                   std::isfinite(calibration.fy) && calibration.fy > 0.0f &&
+                   std::isfinite(calibration.cx) && std::isfinite(calibration.cy) &&
+                   calibration.width > 0 && calibration.height > 0;
+        };
+        if (!valid(source) || !valid(destination)) {
+            throw std::invalid_argument("Invalid saved undistortion calibration");
+        }
+        if ((_camera_model_type != CameraModelType::PINHOLE &&
+             _camera_model_type != CameraModelType::FISHEYE &&
+             _camera_model_type != CameraModelType::THIN_PRISM_FISHEYE) ||
+            !has_distortion()) {
+            throw std::invalid_argument(
+                "Saved undistortion calibration is incompatible with the camera model");
+        }
+
+        // Reuse the authoritative coefficient packing, but keep both serialized
+        // calibrations exactly. In particular, do not re-solve the destination.
+        _undistort_params = compute_undistort_params(
+            source.fx, source.fy, source.cx, source.cy,
+            source.width, source.height,
+            _radial_distortion, _tangential_distortion,
+            _camera_model_type, 0.0f);
+        _undistort_params.src_fx = source.fx;
+        _undistort_params.src_fy = source.fy;
+        _undistort_params.src_cx = source.cx;
+        _undistort_params.src_cy = source.cy;
+        _undistort_params.src_width = source.width;
+        _undistort_params.src_height = source.height;
+        _undistort_params.dst_fx = destination.fx;
+        _undistort_params.dst_fy = destination.fy;
+        _undistort_params.dst_cx = destination.cx;
+        _undistort_params.dst_cy = destination.cy;
+        _undistort_params.dst_width = destination.width;
+        _undistort_params.dst_height = destination.height;
+
+        const CameraCalibration& current = prepared ? destination : source;
+        _focal_x = current.fx;
+        _focal_y = current.fy;
+        _center_x = current.cx;
+        _center_y = current.cy;
+        _camera_width = current.width;
+        _camera_height = current.height;
+        _FoVx = focal2fov(_focal_x, _camera_width);
+        _FoVy = focal2fov(_focal_y, _camera_height);
+        _undistort_precomputed = true;
+        _undistort_prepared = prepared;
     }
 
     void Camera::translate(const Tensor& trans) {

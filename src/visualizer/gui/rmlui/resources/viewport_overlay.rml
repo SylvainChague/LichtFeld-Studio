@@ -807,7 +807,6 @@
                             data-class-selected="gt_compare_actual_size"
                             data-class-disabled="!gt_compare_actual_size_available"
                             data-attrif-disabled="!gt_compare_actual_size_available"
-                            data-attr-title="gt_compare_actual_size_tooltip"
                             data-tooltip="tooltip.gt_compare_actual_size"
                             data-event-click="gt_compare_toggle_actual_size">1:1</button>
                 </div>
