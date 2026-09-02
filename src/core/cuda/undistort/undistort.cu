@@ -28,6 +28,14 @@ namespace lfs::core {
         constexpr float COLMAP_MIN_SCALE = 0.2f;
         constexpr float COLMAP_MAX_SCALE = 2.0f;
 
+        class ScopedNvtxRange {
+        public:
+            explicit ScopedNvtxRange(const char* name) { nvtxRangePush(name); }
+            ~ScopedNvtxRange() { nvtxRangePop(); }
+            ScopedNvtxRange(const ScopedNvtxRange&) = delete;
+            ScopedNvtxRange& operator=(const ScopedNvtxRange&) = delete;
+        };
+
         // COLMAP sensor/models.h (BSD-3 licensed formulas)
         __device__ void apply_distortion_pinhole(
             const float x, const float y,
@@ -243,7 +251,44 @@ namespace lfs::core {
             const int destination_y,
             const int width,
             const int height,
-            cudaStream_t requested_stream) {
+            cudaStream_t requested_stream,
+            const char* range_name) {
+            if (!source.is_valid()) {
+                throw std::invalid_argument(
+                    "undistort_image requires a valid source tensor");
+            }
+            if (source.ndim() != 3) {
+                throw std::invalid_argument(
+                    "undistort_image requires a rank-3 CHW tensor");
+            }
+            if (source.device() != Device::CUDA) {
+                throw std::invalid_argument(
+                    "undistort_image requires a CUDA tensor");
+            }
+            if (!source.is_contiguous()) {
+                throw std::invalid_argument(
+                    "undistort_image requires a contiguous CHW tensor");
+            }
+            if (source.dtype() != DataType::UInt8 &&
+                source.dtype() != DataType::Float32) {
+                throw std::invalid_argument(
+                    "undistort_image requires UInt8 or Float32 input");
+            }
+            if (params.src_width <= 0 || params.src_height <= 0 ||
+                source.shape()[1] != static_cast<std::size_t>(params.src_height) ||
+                source.shape()[2] != static_cast<std::size_t>(params.src_width)) {
+                throw std::invalid_argument(
+                    "undistort_image source dimensions do not match its parameters");
+            }
+            if (params.dst_width <= 0 || params.dst_height <= 0 ||
+                destination_x < 0 || destination_y < 0 || width <= 0 || height <= 0 ||
+                static_cast<std::int64_t>(destination_x) + width > params.dst_width ||
+                static_cast<std::int64_t>(destination_y) + height > params.dst_height) {
+                throw std::invalid_argument(
+                    "undistort_image destination region is outside the full output");
+            }
+
+            const ScopedNvtxRange nvtx_range(range_name);
             const cudaStream_t execution_stream =
                 prepare_inputs_for_stream({&source}, requested_stream);
             const CUDAStreamGuard stream_guard(execution_stream);
@@ -858,20 +903,15 @@ namespace lfs::core {
     }
 
     Tensor undistort_image(const Tensor& src, const UndistortParams& params, cudaStream_t stream) {
-        assert(src.is_valid());
-        assert(src.ndim() == 3);
-        assert(src.device() == Device::CUDA);
-
-        assert(static_cast<int>(src.shape()[1]) == params.src_height);
-        assert(static_cast<int>(src.shape()[2]) == params.src_width);
-
-        nvtxRangePush("undistort_image");
-
-        Tensor dst = undistort_image_impl(
-            src, params, 0, 0, params.dst_width, params.dst_height, stream);
-
-        nvtxRangePop();
-        return dst;
+        return undistort_image_impl(
+            src,
+            params,
+            0,
+            0,
+            params.dst_width,
+            params.dst_height,
+            stream,
+            "undistort_image");
     }
 
     Tensor undistort_image_region(
@@ -882,33 +922,15 @@ namespace lfs::core {
         const int width,
         const int height,
         cudaStream_t stream) {
-        if (!source.is_valid() || source.ndim() != 3 ||
-            source.device() != Device::CUDA || !source.is_contiguous()) {
-            throw std::invalid_argument(
-                "undistort_image_region requires a contiguous CUDA CHW tensor");
-        }
-        if (source.dtype() != DataType::UInt8 &&
-            source.dtype() != DataType::Float32) {
-            throw std::invalid_argument(
-                "undistort_image_region requires UInt8 or Float32 input");
-        }
-        if (static_cast<int>(source.shape()[1]) != params.src_height ||
-            static_cast<int>(source.shape()[2]) != params.src_width) {
-            throw std::invalid_argument(
-                "undistort_image_region source dimensions do not match its parameters");
-        }
-        if (destination_x < 0 || destination_y < 0 || width <= 0 || height <= 0 ||
-            static_cast<std::int64_t>(destination_x) + width > params.dst_width ||
-            static_cast<std::int64_t>(destination_y) + height > params.dst_height) {
-            throw std::invalid_argument(
-                "undistort_image_region destination region is outside the full output");
-        }
-
-        nvtxRangePush("undistort_image_region");
-        Tensor destination = undistort_image_impl(
-            source, params, destination_x, destination_y, width, height, stream);
-        nvtxRangePop();
-        return destination;
+        return undistort_image_impl(
+            source,
+            params,
+            destination_x,
+            destination_y,
+            width,
+            height,
+            stream,
+            "undistort_image_region");
     }
 
     Tensor undistort_mask(const Tensor& src, const UndistortParams& params, cudaStream_t stream) {

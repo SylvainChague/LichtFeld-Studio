@@ -255,7 +255,7 @@ namespace {
     }
 
     void interleaved_rgb8_to_planar_in_place(uint8_t* const pixels,
-                                              const size_t pixel_count) {
+                                             const size_t pixel_count) {
         constexpr size_t CHANNELS = 3;
         if (pixel_count > std::numeric_limits<size_t>::max() / CHANNELS) {
             throw std::overflow_error("RGB image size overflow");

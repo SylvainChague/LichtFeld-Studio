@@ -7,29 +7,18 @@
 #include "core/tensor/internal/cuda_stream_context.hpp"
 #include "io/formats/colmap.hpp"
 #include <array>
-#include <atomic>
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
-#include <thread>
 #include <vector>
 
 using namespace lfs::core;
 
+namespace tensor_hardening {
+    cudaError_t launch_delay_kernel(cudaStream_t stream, uint64_t cycles);
+}
+
 namespace {
-
-    struct StreamGate {
-        std::atomic<bool> entered{false};
-        std::atomic<bool> released{false};
-    };
-
-    void CUDART_CB wait_for_stream_gate(void* user_data) {
-        auto& gate = *static_cast<StreamGate*>(user_data);
-        gate.entered.store(true, std::memory_order_release);
-        while (!gate.released.load(std::memory_order_acquire)) {
-            std::this_thread::yield();
-        }
-    }
 
     constexpr float TEST_FX = 500.0f;
     constexpr float TEST_FY = 500.0f;
@@ -142,6 +131,18 @@ namespace {
             EXPECT_NEAR(actual_data[index], expected_data[index], 1.0e-6f)
                 << "mismatch at region element " << index;
         }
+    }
+
+    void expect_image_undistort_apis_reject(
+        const Tensor& source,
+        const UndistortParams& params) {
+        EXPECT_THROW(
+            (void)undistort_image(source, params, nullptr),
+            std::invalid_argument);
+        EXPECT_THROW(
+            (void)undistort_image_region(
+                source, params, 0, 0, 4, 4, nullptr),
+            std::invalid_argument);
     }
 
 } // namespace
@@ -575,7 +576,7 @@ TEST(UndistortRegion, FloatAndUInt8MatchFullFrameSlicesForAllModels) {
     }
 }
 
-TEST(UndistortRegion, RejectsInvalidDestinationRegionsAndDtypes) {
+TEST(UndistortRegion, RejectsInvalidDestinationRegions) {
     const auto params = make_region_test_params(CameraModelType::PINHOLE);
     const auto source =
         Tensor::zeros({size_t{3}, size_t{24}, size_t{32}}, Device::CUDA);
@@ -589,23 +590,56 @@ TEST(UndistortRegion, RejectsInvalidDestinationRegionsAndDtypes) {
     EXPECT_THROW(
         (void)undistort_image_region(source, params, 0, 0, 0, 4, nullptr),
         std::invalid_argument);
-    const auto unsupported =
-        source.to(DataType::Float16);
-    EXPECT_THROW(
-        (void)undistort_image_region(
-            unsupported, params, 0, 0, 4, 4, nullptr),
-        std::invalid_argument);
+}
+
+TEST(UndistortImageContract, FullAndRegionRejectSameInvalidSources) {
+    const auto params = make_region_test_params(CameraModelType::PINHOLE);
+    const Tensor invalid;
+    expect_image_undistort_apis_reject(invalid, params);
+
+    const auto cpu_source =
+        Tensor::zeros({size_t{3}, size_t{24}, size_t{32}}, Device::CPU);
+    expect_image_undistort_apis_reject(cpu_source, params);
+
+    const auto rank_two =
+        Tensor::zeros({size_t{24}, size_t{32}}, Device::CUDA);
+    expect_image_undistort_apis_reject(rank_two, params);
+
+    const auto hwc =
+        Tensor::zeros({size_t{24}, size_t{32}, size_t{3}}, Device::CUDA);
+    const auto noncontiguous_chw = hwc.permute({2, 0, 1});
+    ASSERT_EQ(
+        noncontiguous_chw.shape(),
+        TensorShape({size_t{3}, size_t{24}, size_t{32}}));
+    ASSERT_FALSE(noncontiguous_chw.is_contiguous());
+    expect_image_undistort_apis_reject(noncontiguous_chw, params);
+
+    const auto unsupported = Tensor::zeros(
+        {size_t{3}, size_t{24}, size_t{32}},
+        Device::CUDA,
+        DataType::Int32);
+    expect_image_undistort_apis_reject(unsupported, params);
+
+    const auto wrong_dimensions =
+        Tensor::zeros({size_t{3}, size_t{23}, size_t{32}}, Device::CUDA);
+    expect_image_undistort_apis_reject(wrong_dimensions, params);
 }
 
 TEST(UndistortRegion, PreservesProducerOrderingOnRequestedNonblockingStream) {
     cudaStream_t producer = nullptr;
     cudaStream_t execution = nullptr;
+    cudaStream_t gate_holder = nullptr;
+    cudaEvent_t gate = nullptr;
     ASSERT_EQ(
         cudaStreamCreateWithFlags(&producer, cudaStreamNonBlocking),
         cudaSuccess);
     ASSERT_EQ(
         cudaStreamCreateWithFlags(&execution, cudaStreamNonBlocking),
         cudaSuccess);
+    ASSERT_EQ(
+        cudaStreamCreateWithFlags(&gate_holder, cudaStreamNonBlocking),
+        cudaSuccess);
+    ASSERT_EQ(cudaEventCreateWithFlags(&gate, cudaEventDisableTiming), cudaSuccess);
 
     Tensor source;
     {
@@ -614,17 +648,16 @@ TEST(UndistortRegion, PreservesProducerOrderingOnRequestedNonblockingStream) {
             {size_t{3}, size_t{24}, size_t{32}}, Device::CUDA);
     }
     ASSERT_EQ(source.stream(), producer);
+    ASSERT_EQ(cudaStreamSynchronize(producer), cudaSuccess);
 
-    StreamGate gate;
     ASSERT_EQ(
-        cudaLaunchHostFunc(producer, wait_for_stream_gate, &gate),
+        tensor_hardening::launch_delay_kernel(gate_holder, 100000000ULL),
         cudaSuccess);
+    ASSERT_EQ(cudaEventRecord(gate, gate_holder), cudaSuccess);
+    ASSERT_EQ(cudaStreamWaitEvent(producer, gate, 0), cudaSuccess);
     {
         CUDAStreamGuard guard(producer);
         source.fill_(0.625f, producer);
-    }
-    while (!gate.entered.load(std::memory_order_acquire)) {
-        std::this_thread::yield();
     }
 
     auto params = make_region_test_params(CameraModelType::PINHOLE);
@@ -635,8 +668,8 @@ TEST(UndistortRegion, PreservesProducerOrderingOnRequestedNonblockingStream) {
     auto region = undistort_image_region(
         source, params, 8, 6, 8, 6, execution);
     EXPECT_EQ(region.stream(), execution);
+    EXPECT_EQ(cudaStreamQuery(execution), cudaErrorNotReady);
 
-    gate.released.store(true, std::memory_order_release);
     ASSERT_EQ(cudaStreamSynchronize(execution), cudaSuccess);
     const auto values = region.cpu().to_vector();
     ASSERT_EQ(values.size(), 3u * 6u * 8u);
@@ -648,6 +681,8 @@ TEST(UndistortRegion, PreservesProducerOrderingOnRequestedNonblockingStream) {
     region = Tensor();
     EXPECT_EQ(cudaStreamDestroy(execution), cudaSuccess);
     EXPECT_EQ(cudaStreamDestroy(producer), cudaSuccess);
+    EXPECT_EQ(cudaStreamDestroy(gate_holder), cudaSuccess);
+    EXPECT_EQ(cudaEventDestroy(gate), cudaSuccess);
 }
 
 // ====================== Center pixel preservation ======================

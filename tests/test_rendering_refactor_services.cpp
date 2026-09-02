@@ -496,6 +496,55 @@ namespace lfs::vis {
         EXPECT_EQ(smaller_than_viewport.extent, glm::ivec2(1000, 800));
     }
 
+    TEST(SplitViewServiceTest, ActualSizeResizePreservesCropCenterAndClamps) {
+        const detail::GTComparisonCrop initial{
+            .origin = {3000, 2000},
+            .extent = {1920, 1080}};
+
+        const auto grown = detail::resizeGTComparisonCropPreservingCenter(
+            {8192, 6144}, {2560, 1440}, initial);
+        EXPECT_EQ(grown.origin, glm::ivec2(2680, 1820));
+        EXPECT_EQ(grown.extent, glm::ivec2(2560, 1440));
+
+        const auto shrunk = detail::resizeGTComparisonCropPreservingCenter(
+            {8192, 6144}, {1280, 720}, initial);
+        EXPECT_EQ(shrunk.origin, glm::ivec2(3320, 2180));
+        EXPECT_EQ(shrunk.extent, glm::ivec2(1280, 720));
+
+        const auto odd = detail::resizeGTComparisonCropPreservingCenter(
+            {101, 101}, {4, 6}, {.origin = {10, 20}, .extent = {5, 5}});
+        EXPECT_EQ(odd.origin, glm::ivec2(11, 20));
+        EXPECT_EQ(odd.extent, glm::ivec2(4, 6));
+
+        const auto one_axis_letterboxed =
+            detail::resizeGTComparisonCropPreservingCenter(
+                {1000, 3000},
+                {2000, 1500},
+                {.origin = {0, 1000}, .extent = {1000, 1000}});
+        EXPECT_EQ(one_axis_letterboxed.origin, glm::ivec2(0, 750));
+        EXPECT_EQ(one_axis_letterboxed.extent, glm::ivec2(1000, 1500));
+
+        const auto edge_clamped = detail::resizeGTComparisonCropPreservingCenter(
+            {8192, 6144},
+            {3840, 2160},
+            {.origin = {6272, 5064}, .extent = {1920, 1080}});
+        EXPECT_EQ(edge_clamped.origin, glm::ivec2(4352, 3984));
+        EXPECT_EQ(edge_clamped.extent, glm::ivec2(3840, 2160));
+
+        const auto hidpi = detail::resizeGTComparisonCropPreservingCenter(
+            {8192, 6144},
+            {3001, 1501},
+            {.origin = {2500, 1900}, .extent = {2000, 1000}});
+        EXPECT_EQ(hidpi.origin, glm::ivec2(2000, 1650));
+        EXPECT_EQ(hidpi.extent, glm::ivec2(3001, 1501));
+
+        const auto invalid_previous =
+            detail::resizeGTComparisonCropPreservingCenter(
+                {8192, 6144}, {2560, 1440}, {});
+        EXPECT_EQ(invalid_previous.origin, glm::ivec2(2816, 2352));
+        EXPECT_EQ(invalid_previous.extent, glm::ivec2(2560, 1440));
+    }
+
     TEST(SplitViewServiceTest, ActualSizeGeometryUsesPhysicalEdgesAndOneRoundedDrag) {
         const glm::ivec2 physical_extent{2001, 1001};
         const glm::ivec2 logical_extent{1000, 500};

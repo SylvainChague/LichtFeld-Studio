@@ -599,17 +599,27 @@ namespace lfs::vis {
 
             const bool source_changed =
                 gt_comparison_actual_size_state_.source_generation != lookup.generation;
-            const bool recenter =
+            const bool reset_crop =
                 source_changed ||
                 gt_comparison_actual_size_state_.full_extent != full_extent ||
+                !detail::isGTComparisonCropValidForViewport(
+                    full_extent,
+                    gt_comparison_actual_size_state_.framebuffer_extent,
+                    gt_comparison_actual_size_state_.crop);
+            const bool framebuffer_changed =
                 gt_comparison_actual_size_state_.framebuffer_extent != physical_viewport;
-            const auto crop = recenter
-                                  ? detail::centerGTComparisonCrop(
-                                        full_extent, physical_viewport)
-                                  : detail::clampGTComparisonCrop(
-                                        full_extent,
-                                        physical_viewport,
-                                        gt_comparison_actual_size_state_.crop.origin);
+            const auto crop =
+                reset_crop
+                    ? detail::centerGTComparisonCrop(full_extent, physical_viewport)
+                : framebuffer_changed
+                    ? detail::resizeGTComparisonCropPreservingCenter(
+                          full_extent,
+                          physical_viewport,
+                          gt_comparison_actual_size_state_.crop)
+                    : detail::clampGTComparisonCrop(
+                          full_extent,
+                          physical_viewport,
+                          gt_comparison_actual_size_state_.crop.origin);
             if (!crop.valid()) {
                 throw std::runtime_error("full-resolution comparison crop is empty");
             }
