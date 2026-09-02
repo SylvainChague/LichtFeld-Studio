@@ -2336,6 +2336,11 @@ namespace lfs::io::project {
             auto parsed_destination = parse_camera_calibration(
                 *destination, std::format("{}.destination", nested_field));
             auto prepared = required<bool>(*found, "prepared", "SCNG", nested_field);
+            lfs::Result<bool> crop_solve_failed = false;
+            if (found->contains("crop_solve_failed")) {
+                crop_solve_failed = required<bool>(
+                    *found, "crop_solve_failed", "SCNG", nested_field);
+            }
             if (!parsed_source) {
                 return std::move(parsed_source).error();
             }
@@ -2345,11 +2350,15 @@ namespace lfs::io::project {
             if (!prepared) {
                 return std::move(prepared).error();
             }
+            if (!crop_solve_failed) {
+                return std::move(crop_solve_failed).error();
+            }
             return std::optional<CameraUndistortionRecord>(
                 CameraUndistortionRecord{
                     .source = *parsed_source,
                     .destination = *parsed_destination,
                     .prepared = *prepared,
+                    .crop_solve_failed = *crop_solve_failed,
                 });
         }
 
@@ -2544,6 +2553,9 @@ namespace lfs::io::project {
                     {"destination", camera_calibration_json(value.undistortion->destination)},
                     {"prepared", value.undistortion->prepared},
                 };
+                if (value.undistortion->crop_solve_failed) {
+                    result["undistortion"]["crop_solve_failed"] = true;
+                }
             }
             return result;
         }

@@ -21,6 +21,16 @@ namespace lfs::core {
         bool crop_solve_failed = false;
     };
 
+    namespace detail {
+
+        UndistortParams initialize_undistort_params(
+            float fx, float fy, float cx, float cy,
+            int width, int height,
+            const Tensor& radial, const Tensor& tangential,
+            CameraModelType model);
+
+    } // namespace detail
+
     UndistortParams compute_undistort_params(
         float fx, float fy, float cx, float cy,
         int width, int height,

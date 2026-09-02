@@ -860,13 +860,11 @@ namespace lfs::core {
         if (!has_distortion())
             return;
 
-        _undistort_params = compute_undistort_params(
+        adopt_undistortion(compute_undistort_params(
             _focal_x, _focal_y, _center_x, _center_y,
             _camera_width, _camera_height,
             _radial_distortion, _tangential_distortion,
-            _camera_model_type, blank_pixels);
-
-        _undistort_precomputed = true;
+            _camera_model_type, blank_pixels));
     }
 
     void Camera::adopt_undistortion(const UndistortParams& params) noexcept {
@@ -896,7 +894,8 @@ namespace lfs::core {
     void Camera::restore_undistortion_state(
         const CameraCalibration& source,
         const CameraCalibration& destination,
-        const bool prepared) {
+        const bool prepared,
+        const bool crop_solve_failed) {
         const auto valid = [](const CameraCalibration& calibration) {
             return std::isfinite(calibration.fx) && calibration.fx > 0.0f &&
                    std::isfinite(calibration.fy) && calibration.fy > 0.0f &&
@@ -914,25 +913,19 @@ namespace lfs::core {
                 "Saved undistortion calibration is incompatible with the camera model");
         }
 
-        // Reuse the authoritative coefficient packing, but keep both serialized
-        // calibrations exactly. In particular, do not re-solve the destination.
-        _undistort_params = compute_undistort_params(
+        auto params = detail::initialize_undistort_params(
             source.fx, source.fy, source.cx, source.cy,
             source.width, source.height,
             _radial_distortion, _tangential_distortion,
-            _camera_model_type, 0.0f);
-        _undistort_params.src_fx = source.fx;
-        _undistort_params.src_fy = source.fy;
-        _undistort_params.src_cx = source.cx;
-        _undistort_params.src_cy = source.cy;
-        _undistort_params.src_width = source.width;
-        _undistort_params.src_height = source.height;
-        _undistort_params.dst_fx = destination.fx;
-        _undistort_params.dst_fy = destination.fy;
-        _undistort_params.dst_cx = destination.cx;
-        _undistort_params.dst_cy = destination.cy;
-        _undistort_params.dst_width = destination.width;
-        _undistort_params.dst_height = destination.height;
+            _camera_model_type);
+        params.dst_fx = destination.fx;
+        params.dst_fy = destination.fy;
+        params.dst_cx = destination.cx;
+        params.dst_cy = destination.cy;
+        params.dst_width = destination.width;
+        params.dst_height = destination.height;
+        params.crop_solve_failed = crop_solve_failed;
+        adopt_undistortion(params);
 
         const CameraCalibration& current = prepared ? destination : source;
         _focal_x = current.fx;
@@ -943,7 +936,6 @@ namespace lfs::core {
         _camera_height = current.height;
         _FoVx = focal2fov(_focal_x, _camera_width);
         _FoVy = focal2fov(_focal_y, _camera_height);
-        _undistort_precomputed = true;
         _undistort_prepared = prepared;
     }
 

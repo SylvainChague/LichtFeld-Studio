@@ -674,7 +674,8 @@ namespace {
         return camera;
     }
 
-    CameraUndistortionRecord make_chapter_undistortion(const bool prepared) {
+    CameraUndistortionRecord make_chapter_undistortion(
+        const bool prepared, const bool crop_solve_failed = false) {
         return CameraUndistortionRecord{
             .source = CameraCalibrationRecord{
                 .focal_x = 801.25f,
@@ -683,14 +684,9 @@ namespace {
                 .center_y = 359.25f,
                 .width = 1280,
                 .height = 720},
-            .destination = CameraCalibrationRecord{
-                .focal_x = 733.125f,
-                .focal_y = 731.875f,
-                .center_x = 602.75f,
-                .center_y = 341.5f,
-                .width = 1207,
-                .height = 683},
-            .prepared = prepared};
+            .destination = CameraCalibrationRecord{.focal_x = 733.125f, .focal_y = 731.875f, .center_x = 602.75f, .center_y = 341.5f, .width = 1207, .height = 683},
+            .prepared = prepared,
+            .crop_solve_failed = crop_solve_failed};
     }
 
     void use_current_undistortion_calibration(CameraRecord& camera) {
@@ -712,42 +708,55 @@ namespace {
             uuid_literal("53000000-0000-4000-8000-000000000020");
         for (const std::int32_t model : {0, 2, 4}) {
             for (const bool prepared : {false, true}) {
-                SCOPED_TRACE(model);
-                SCOPED_TRACE(prepared);
-                auto camera = make_chapter_camera();
-                camera.camera_model_type = model;
-                camera.undistortion = make_chapter_undistortion(prepared);
-                if (model == 0) {
-                    camera.radial_distortion = {-0.08f, 0.01f};
-                } else if (model == 2) {
-                    camera.radial_distortion = {0.04f, -0.005f, 0.001f, -0.0002f};
-                } else {
-                    camera.radial_distortion = {0.03f, -0.004f, 0.001f, -0.0002f};
-                    camera.tangential_distortion = {
-                        0.001f, -0.0015f, 0.0005f, -0.0004f};
-                }
-                use_current_undistortion_calibration(camera);
+                for (const bool crop_solve_failed : {false, true}) {
+                    SCOPED_TRACE(model);
+                    SCOPED_TRACE(prepared);
+                    SCOPED_TRACE(crop_solve_failed);
+                    auto camera = make_chapter_camera();
+                    camera.camera_model_type = model;
+                    camera.undistortion =
+                        make_chapter_undistortion(prepared, crop_solve_failed);
+                    if (model == 0) {
+                        camera.radial_distortion = {-0.08f, 0.01f};
+                    } else if (model == 2) {
+                        camera.radial_distortion = {0.04f, -0.005f, 0.001f, -0.0002f};
+                    } else {
+                        camera.radial_distortion = {0.03f, -0.004f, 0.001f, -0.0002f};
+                        camera.tangential_distortion = {
+                            0.001f, -0.0015f, 0.0005f, -0.0004f};
+                    }
+                    use_current_undistortion_calibration(camera);
 
-                SceneGraphChapter chapter;
-                ASSERT_TRUE(chapter.upsert_node(SceneNodeRecord{
-                    .uuid = node_id,
-                    .type = "camera",
-                    .name = "calibrated-camera",
-                    .child_order = 0,
-                    .camera = camera}));
-                auto reparsed = SceneGraphChapter::from_bytes(chapter.to_bytes());
-                ASSERT_TRUE(reparsed)
-                    << lfs::format_for_developer(reparsed.error());
-                auto found = reparsed->find(node_id);
-                ASSERT_TRUE(found)
-                    << lfs::format_for_developer(found.error());
-                ASSERT_TRUE(*found);
-                ASSERT_TRUE((*found)->camera);
-                EXPECT_EQ(*(*found)->camera, camera);
-                ASSERT_TRUE((*found)->camera->undistortion);
-                EXPECT_EQ(
-                    (*found)->camera->undistortion->destination,
-                    make_chapter_undistortion(prepared).destination);
+                    SceneGraphChapter chapter;
+                    ASSERT_TRUE(chapter.upsert_node(SceneNodeRecord{
+                        .uuid = node_id,
+                        .type = "camera",
+                        .name = "calibrated-camera",
+                        .child_order = 0,
+                        .camera = camera}));
+                    const auto dumped =
+                        lfs::io::JsonChapterDom::Json::parse(chapter.dom().dump());
+                    EXPECT_EQ(
+                        dumped["nodes"][0]["camera"]["undistortion"].contains(
+                            "crop_solve_failed"),
+                        crop_solve_failed);
+                    auto reparsed = SceneGraphChapter::from_bytes(chapter.to_bytes());
+                    ASSERT_TRUE(reparsed)
+                        << lfs::format_for_developer(reparsed.error());
+                    auto found = reparsed->find(node_id);
+                    ASSERT_TRUE(found)
+                        << lfs::format_for_developer(found.error());
+                    ASSERT_TRUE(*found);
+                    ASSERT_TRUE((*found)->camera);
+                    EXPECT_EQ(*(*found)->camera, camera);
+                    ASSERT_TRUE((*found)->camera->undistortion);
+                    EXPECT_EQ(
+                        (*found)->camera->undistortion->destination,
+                        make_chapter_undistortion(prepared).destination);
+                    EXPECT_EQ(
+                        (*found)->camera->undistortion->crop_solve_failed,
+                        crop_solve_failed);
+                }
             }
         }
     }
@@ -832,6 +841,11 @@ namespace {
         auto missing_prepared = baseline;
         missing_prepared["nodes"][0]["camera"]["undistortion"].erase("prepared");
         expect_data_loss(std::move(missing_prepared));
+
+        auto invalid_crop_solve_failed = baseline;
+        invalid_crop_solve_failed["nodes"][0]["camera"]["undistortion"]
+                                 ["crop_solve_failed"] = "yes";
+        expect_data_loss(std::move(invalid_crop_solve_failed));
 
         auto null_record = baseline;
         null_record["nodes"][0]["camera"]["undistortion"] = nullptr;

@@ -376,6 +376,7 @@ namespace lfs::io::project {
         CameraCalibrationRecord source;
         CameraCalibrationRecord destination;
         bool prepared = false;
+        bool crop_solve_failed = false;
 
         friend bool operator==(const CameraUndistortionRecord&,
                                const CameraUndistortionRecord&) = default;

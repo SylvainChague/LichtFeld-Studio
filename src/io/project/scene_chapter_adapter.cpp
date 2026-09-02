@@ -228,6 +228,7 @@ namespace lfs::io::project {
                         .height = params.dst_height,
                     },
                     .prepared = camera.is_undistort_prepared(),
+                    .crop_solve_failed = params.crop_solve_failed,
                 };
             }
             return result;
@@ -443,7 +444,8 @@ namespace lfs::io::project {
                 camera->restore_undistortion_state(
                     calibration(value.undistortion->source),
                     calibration(value.undistortion->destination),
-                    value.undistortion->prepared);
+                    value.undistortion->prepared,
+                    value.undistortion->crop_solve_failed);
             }
             camera->set_image_dimensions(value.image_width, value.image_height);
             camera->set_has_alpha(value.has_alpha);

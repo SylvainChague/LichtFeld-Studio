@@ -694,7 +694,8 @@ namespace lfs::vis {
                     radial, tangential, model,
                     "calibration.png", "calibration.png", {},
                     source.width, source.height, 101);
-                camera.restore_undistortion_state(source, destination, prepared);
+                camera.restore_undistortion_state(
+                    source, destination, prepared, true);
 
                 ASSERT_TRUE(camera.is_undistort_precomputed());
                 EXPECT_EQ(camera.is_undistort_prepared(), prepared);
@@ -711,6 +712,8 @@ namespace lfs::vis {
                 EXPECT_FLOAT_EQ(params.dst_cy, destination.cy);
                 EXPECT_EQ(params.dst_width, destination.width);
                 EXPECT_EQ(params.dst_height, destination.height);
+                EXPECT_EQ(params.model_type, model);
+                EXPECT_TRUE(params.crop_solve_failed);
 
                 Camera transformed(camera, camera.world_view_transform());
                 EXPECT_TRUE(transformed.is_undistort_precomputed());
@@ -718,6 +721,16 @@ namespace lfs::vis {
                 EXPECT_EQ(transformed.undistort_params().src_width, source.width);
                 EXPECT_EQ(transformed.undistort_params().dst_width, destination.width);
                 EXPECT_FLOAT_EQ(transformed.undistort_params().dst_fx, destination.fx);
+                EXPECT_EQ(transformed.undistort_params().model_type, model);
+                EXPECT_EQ(
+                    transformed.undistort_params().num_distortion,
+                    params.num_distortion);
+                EXPECT_TRUE(transformed.undistort_params().crop_solve_failed);
+                for (int i = 0; i < 12; ++i) {
+                    EXPECT_FLOAT_EQ(
+                        transformed.undistort_params().distortion[i],
+                        params.distortion[i]);
+                }
                 const auto& current = prepared ? destination : source;
                 EXPECT_FLOAT_EQ(transformed.focal_x(), current.fx);
                 EXPECT_FLOAT_EQ(transformed.focal_y(), current.fy);

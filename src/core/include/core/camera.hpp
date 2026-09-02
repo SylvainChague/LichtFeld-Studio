@@ -235,7 +235,8 @@ namespace lfs::core {
         void restore_undistortion_state(
             const CameraCalibration& source,
             const CameraCalibration& destination,
-            bool prepared);
+            bool prepared,
+            bool crop_solve_failed = false);
         bool is_undistort_prepared() const noexcept { return _undistort_prepared; }
         bool has_distortion() const noexcept;
         const UndistortParams& undistort_params() const noexcept { return _undistort_params; }
