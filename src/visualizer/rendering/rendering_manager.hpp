@@ -915,6 +915,21 @@ namespace lfs::vis {
             std::chrono::steady_clock::time_point failure_time{};
         };
         struct GTComparisonActualSizeState {
+            struct TileFailure {
+                detail::GTComparisonTileKey key;
+                std::chrono::steady_clock::time_point time{};
+                std::string error;
+
+                [[nodiscard]] bool suppresses(
+                    const detail::GTComparisonTileKey& candidate,
+                    const std::chrono::steady_clock::time_point now,
+                    const std::chrono::steady_clock::duration cooldown) const {
+                    return key == candidate &&
+                           time.time_since_epoch().count() != 0 &&
+                           now - time < cooldown;
+                }
+            };
+
             detail::GTComparisonSourceKey source_key;
             uint64_t source_generation = 0;
             std::shared_ptr<lfs::core::Tensor> cpu_source;
@@ -923,6 +938,7 @@ namespace lfs::vis {
             glm::ivec2 framebuffer_extent{0, 0};
             detail::GTComparisonCrop crop{};
             std::optional<detail::GTComparisonTileKey> tile_key;
+            std::optional<TileFailure> tile_failure;
             std::shared_ptr<lfs::core::Tensor> visible_tile;
             std::shared_ptr<lfs::core::Tensor> fit_fallback;
 
@@ -1012,6 +1028,7 @@ namespace lfs::vis {
 
         friend class RenderingManagerEventsTest_SceneClearedResetsFrustumLoaderSyncCache_Test;
         friend class RenderingManagerActualSizeStateTest_PublishesOnlyAtCommitAndRetainsAcrossResourceInvalidation_Test;
+        friend class RenderingManagerActualSizeFailureTest_KeyedCooldownRetainsFallbackAndAllowsRelevantChanges_Test;
         friend class SceneManager;
     };
 

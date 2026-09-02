@@ -6,6 +6,7 @@
 #include "core/image_io.hpp"
 #include "core/image_loader.hpp"
 #include "core/logger.hpp"
+#include "core/memory_pressure.hpp"
 #include "core/tensor/internal/cuda_stream_context.hpp"
 #include "core/tensor/internal/memory_pool.hpp"
 #include "gt_comparison_cache_utils.hpp"
@@ -498,6 +499,21 @@ namespace lfs::vis {
         const glm::ivec2 physical_viewport,
         cudaStream_t stream) {
         GTComparisonActualFrame frame;
+        std::optional<detail::GTComparisonTileKey> attempted_tile_key;
+        const auto fail_tile = [&](std::string error) {
+            gt_comparison_actual_size_state_.invalidateTile();
+            if (attempted_tile_key) {
+                gt_comparison_actual_size_state_.tile_failure =
+                    GTComparisonActualSizeState::TileFailure{
+                        .key = *attempted_tile_key,
+                        .time = std::chrono::steady_clock::now(),
+                        .error = error};
+            }
+            frame.status = GTComparisonImageStatus::Failed;
+            frame.tile.reset();
+            frame.error = std::move(error);
+            LOG_WARN("{}", frame.error);
+        };
         const detail::GTComparisonSourceKey source_key{
             .camera_uid = camera.uid(),
             .image_path = camera.image_path()};
@@ -613,9 +629,21 @@ namespace lfs::vis {
                 .framebuffer_extent = physical_viewport,
                 .crop = crop,
                 .distorted = distorted};
-            if (!gt_comparison_actual_size_state_.tile_key ||
+            const bool needs_tile =
+                !gt_comparison_actual_size_state_.tile_key ||
                 *gt_comparison_actual_size_state_.tile_key != tile_key ||
-                !gt_comparison_actual_size_state_.visible_tile) {
+                !gt_comparison_actual_size_state_.visible_tile;
+            if (needs_tile) {
+                const auto now = std::chrono::steady_clock::now();
+                if (gt_comparison_actual_size_state_.tile_failure &&
+                    gt_comparison_actual_size_state_.tile_failure->suppresses(
+                        tile_key, now, GT_COMPARISON_IMAGE_RETRY_COOLDOWN)) {
+                    frame.status = GTComparisonImageStatus::Failed;
+                    frame.error =
+                        gt_comparison_actual_size_state_.tile_failure->error;
+                    return frame;
+                }
+                attempted_tile_key = tile_key;
                 lfs::core::Tensor visible;
                 if (scaled_undistort) {
                     const lfs::core::CUDAStreamGuard guard(stream);
@@ -655,6 +683,7 @@ namespace lfs::vis {
                     std::make_shared<lfs::core::Tensor>(std::move(visible));
                 gt_comparison_actual_size_state_.tile_key = tile_key;
             }
+            gt_comparison_actual_size_state_.tile_failure.reset();
 
             frame.status = GTComparisonImageStatus::Ready;
             frame.tile = gt_comparison_actual_size_state_.visible_tile;
@@ -677,13 +706,15 @@ namespace lfs::vis {
                 .crop = crop};
             frame.content_rect = detail::centeredGTComparisonContentRect(
                 physical_viewport, crop.extent);
+        } catch (const lfs::core::MemoryAllocationError& error) {
+            fail_tile(std::format(
+                "Not enough memory to build the RGB GT comparison 1:1 tile "
+                "({} bytes requested): {}",
+                error.requested_bytes(),
+                error.what()));
         } catch (const std::exception& error) {
-            gt_comparison_actual_size_state_.invalidateTile();
-            frame.status = GTComparisonImageStatus::Failed;
-            frame.tile.reset();
-            frame.error = std::format(
-                "RGB GT comparison 1:1 tile failed: {}", error.what());
-            LOG_WARN("{}", frame.error);
+            fail_tile(std::format(
+                "RGB GT comparison 1:1 tile failed: {}", error.what()));
         }
         return frame;
     }

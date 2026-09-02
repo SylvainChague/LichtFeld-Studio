@@ -1818,6 +1818,7 @@ namespace lfs::vis {
                                     gt_image = actual_frame.fallback;
                                     gt_loading = !gt_image;
                                 } else {
+                                    gt_image = actual_frame.fallback;
                                     gt_error = actual_frame.error.empty()
                                                    ? "RGB GT comparison could not load the full-resolution source"
                                                    : actual_frame.error;

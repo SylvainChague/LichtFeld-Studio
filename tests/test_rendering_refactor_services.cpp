@@ -811,6 +811,74 @@ namespace lfs::vis {
         EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(0, 0));
     }
 
+    TEST(RenderingManagerActualSizeFailureTest,
+         KeyedCooldownRetainsFallbackAndAllowsRelevantChanges) {
+        using State = RenderingManager::GTComparisonActualSizeState;
+        State state;
+        state.fit_fallback = std::make_shared<lfs::core::Tensor>();
+        state.visible_tile = std::make_shared<lfs::core::Tensor>();
+        state.tile_key = detail::GTComparisonTileKey{};
+
+        const detail::GTComparisonTileKey failed_key{
+            .source_generation = 4,
+            .full_extent = {8192, 6144},
+            .framebuffer_extent = {1920, 1080},
+            .crop = {
+                .origin = {3136, 2532},
+                .extent = {1920, 1080}},
+            .distorted = true};
+        const auto failed_at =
+            std::chrono::steady_clock::time_point(std::chrono::seconds(10));
+        state.tile_failure = State::TileFailure{
+            .key = failed_key,
+            .time = failed_at,
+            .error = "tile allocation failed"};
+
+        EXPECT_TRUE(state.tile_failure->suppresses(
+            failed_key,
+            failed_at + std::chrono::seconds(1),
+            RenderingManager::GT_COMPARISON_IMAGE_RETRY_COOLDOWN));
+        EXPECT_FALSE(state.tile_failure->suppresses(
+            failed_key,
+            failed_at + RenderingManager::GT_COMPARISON_IMAGE_RETRY_COOLDOWN,
+            RenderingManager::GT_COMPARISON_IMAGE_RETRY_COOLDOWN));
+
+        for (int changed_field = 0; changed_field < 5; ++changed_field) {
+            auto changed = failed_key;
+            switch (changed_field) {
+            case 0:
+                ++changed.source_generation;
+                break;
+            case 1:
+                ++changed.full_extent.x;
+                break;
+            case 2:
+                ++changed.framebuffer_extent.y;
+                break;
+            case 3:
+                ++changed.crop.origin.x;
+                break;
+            case 4:
+                changed.distorted = false;
+                break;
+            }
+            EXPECT_FALSE(state.tile_failure->suppresses(
+                changed,
+                failed_at + std::chrono::milliseconds(1),
+                RenderingManager::GT_COMPARISON_IMAGE_RETRY_COOLDOWN));
+        }
+
+        state.invalidateTile();
+        EXPECT_TRUE(state.fit_fallback);
+        EXPECT_TRUE(state.tile_failure);
+        EXPECT_FALSE(state.visible_tile);
+        EXPECT_FALSE(state.tile_key);
+
+        state.tile_failure.reset();
+        EXPECT_FALSE(state.tile_failure);
+        EXPECT_TRUE(state.fit_fallback);
+    }
+
     TEST(SplitViewServiceTest, ActualSizeCaptureUsesExactTexelsFlipAndLetterbox) {
         constexpr int panel_width = 8;
         constexpr int panel_height = 6;
