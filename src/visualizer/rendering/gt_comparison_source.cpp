@@ -69,10 +69,9 @@ namespace lfs::vis {
             }
             const auto sample = [&](const int channel, const int x, const int y) {
                 const int bounded_channel = std::clamp(channel, 0, source_channels - 1);
-                return source_data[
-                    (static_cast<std::size_t>(bounded_channel) * source_height + y) *
-                        source_width +
-                    x];
+                return source_data[(static_cast<std::size_t>(bounded_channel) * source_height + y) *
+                                       source_width +
+                                   x];
             };
 
             const float scale_x = static_cast<float>(source_width) / destination_width;
@@ -420,6 +419,7 @@ namespace lfs::vis {
             released_full_source = std::move(gt_comparison_full_source_slot_);
         }
         gt_comparison_actual_size_state_.reset();
+        clearPublishedGTComparisonActualFrame();
         gt_comparison_cuda_image_.reset();
         gt_comparison_cuda_source_ = nullptr;
         gt_comparison_cuda_generation_ = 0;
@@ -470,6 +470,26 @@ namespace lfs::vis {
         split_left_source_camera_uid_ = -1;
         split_left_source_undistorted_ = false;
         split_left_image_generation_ = 0;
+    }
+
+    void RenderingManager::publishGTComparisonActualFrame(
+        const GTComparisonActualFrame::Snapshot& snapshot) {
+        gt_comparison_published_actual_frame_ = snapshot;
+        if (gt_comparison_actual_size_state_.source_key != snapshot.source_key ||
+            gt_comparison_actual_size_state_.source_generation !=
+                snapshot.source_generation) {
+            return;
+        }
+
+        gt_comparison_actual_size_state_.fit_fallback.reset();
+        std::lock_guard lock(gt_comparison_image_mutex_);
+        gt_comparison_image_cache_.clear();
+        gt_comparison_image_cache_bytes_ = 0;
+        prefetch_gt_comparison_image_requests_.clear();
+    }
+
+    void RenderingManager::clearPublishedGTComparisonActualFrame() {
+        gt_comparison_published_actual_frame_.reset();
     }
 
     RenderingManager::GTComparisonActualFrame
@@ -626,7 +646,7 @@ namespace lfs::vis {
                                       2,
                                       static_cast<std::size_t>(crop.origin.x),
                                       static_cast<std::size_t>(
-                                           crop.origin.x + crop.extent.x))
+                                          crop.origin.x + crop.extent.x))
                                   .contiguous();
                     visible = lfs::rendering::flipImageVertical(
                         visible, lfs::rendering::ImageLayout::CHW);
@@ -649,24 +669,18 @@ namespace lfs::vis {
                               .center_x = scaled_undistort->dst_cx,
                               .center_y = scaled_undistort->dst_cy}}
                         : std::nullopt};
+            frame.snapshot = GTComparisonActualFrame::Snapshot{
+                .source_key = source_key,
+                .source_generation = lookup.generation,
+                .full_extent = full_extent,
+                .framebuffer_extent = physical_viewport,
+                .crop = crop};
             frame.content_rect = detail::centeredGTComparisonContentRect(
                 physical_viewport, crop.extent);
-
-            if (!gt_comparison_actual_size_state_.presented) {
-                gt_comparison_actual_size_state_.fit_fallback.reset();
-                frame.fallback.reset();
-                std::lock_guard lock(gt_comparison_image_mutex_);
-                gt_comparison_image_cache_.clear();
-                gt_comparison_image_cache_bytes_ = 0;
-                prefetch_gt_comparison_image_requests_.clear();
-            }
-            gt_comparison_actual_size_state_.presented = true;
         } catch (const std::exception& error) {
-            gt_comparison_actual_size_state_.presented = false;
             gt_comparison_actual_size_state_.invalidateTile();
             frame.status = GTComparisonImageStatus::Failed;
             frame.tile.reset();
-            frame.fallback.reset();
             frame.error = std::format(
                 "RGB GT comparison 1:1 tile failed: {}", error.what());
             LOG_WARN("{}", frame.error);

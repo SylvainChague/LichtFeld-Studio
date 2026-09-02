@@ -742,6 +742,75 @@ namespace lfs::vis {
         }
     }
 
+    TEST(RenderingManagerActualSizeStateTest,
+         PublishesOnlyAtCommitAndRetainsAcrossResourceInvalidation) {
+        RenderingManager manager;
+        const detail::GTComparisonSourceKey source_key{
+            .camera_uid = 17,
+            .image_path = "frame.png"};
+        const RenderingManager::GTComparisonActualFrame::Snapshot prepared{
+            .source_key = source_key,
+            .source_generation = 9,
+            .full_extent = {400, 300},
+            .framebuffer_extent = {200, 120},
+            .crop = {
+                .origin = {30, 15},
+                .extent = {100, 80}}};
+
+        manager.gt_comparison_actual_size_state_.source_key = source_key;
+        manager.gt_comparison_actual_size_state_.source_generation = 9;
+        manager.gt_comparison_actual_size_state_.full_extent = {400, 300};
+        manager.gt_comparison_actual_size_state_.framebuffer_extent = {200, 120};
+        manager.gt_comparison_actual_size_state_.crop = prepared.crop;
+        manager.gt_comparison_actual_size_state_.fit_fallback =
+            std::make_shared<lfs::core::Tensor>();
+        manager.gt_comparison_image_cache_.emplace_back();
+
+        RenderingManager::GTComparisonActualFrame candidate;
+        candidate.snapshot = prepared;
+        EXPECT_FALSE(manager.isGTComparisonActualSizeActive());
+        EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(0, 0));
+        EXPECT_TRUE(manager.gt_comparison_actual_size_state_.fit_fallback);
+
+        manager.publishGTComparisonActualFrame(*candidate.snapshot);
+        EXPECT_TRUE(manager.isGTComparisonActualSizeActive());
+        EXPECT_EQ(manager.getGTComparisonCropOrigin(), prepared.crop.origin);
+        EXPECT_FALSE(manager.gt_comparison_actual_size_state_.fit_fallback);
+        EXPECT_TRUE(manager.gt_comparison_image_cache_.empty());
+
+        const auto bounds = manager.getContentBounds({100, 60});
+        EXPECT_FLOAT_EQ(bounds.x, 25.0f);
+        EXPECT_FLOAT_EQ(bounds.y, 10.0f);
+        EXPECT_FLOAT_EQ(bounds.width, 50.0f);
+        EXPECT_FLOAT_EQ(bounds.height, 40.0f);
+        EXPECT_TRUE(bounds.letterboxed);
+
+        manager.invalidateGTComparisonActualSizeResources();
+        EXPECT_TRUE(manager.isGTComparisonActualSizeActive());
+        EXPECT_EQ(manager.getGTComparisonCropOrigin(), prepared.crop.origin);
+
+        manager.gt_comparison_actual_size_state_.source_key = source_key;
+        manager.gt_comparison_actual_size_state_.source_generation = 9;
+        manager.gt_comparison_actual_size_state_.full_extent = prepared.full_extent;
+        manager.gt_comparison_actual_size_state_.framebuffer_extent =
+            prepared.framebuffer_extent;
+        manager.gt_comparison_actual_size_state_.crop = prepared.crop;
+        manager.setGTComparisonCropOrigin({60, 30});
+        EXPECT_EQ(
+            manager.gt_comparison_actual_size_state_.crop.origin,
+            glm::ivec2(60, 30));
+        EXPECT_EQ(manager.getGTComparisonCropOrigin(), prepared.crop.origin);
+
+        auto replacement = prepared;
+        replacement.crop = manager.gt_comparison_actual_size_state_.crop;
+        manager.publishGTComparisonActualFrame(replacement);
+        EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(60, 30));
+
+        manager.clearPublishedGTComparisonActualFrame();
+        EXPECT_FALSE(manager.isGTComparisonActualSizeActive());
+        EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(0, 0));
+    }
+
     TEST(SplitViewServiceTest, ActualSizeCaptureUsesExactTexelsFlipAndLetterbox) {
         constexpr int panel_width = 8;
         constexpr int panel_height = 6;

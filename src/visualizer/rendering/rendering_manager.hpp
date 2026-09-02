@@ -377,10 +377,12 @@ namespace lfs::vis {
         [[nodiscard]] bool isGTComparisonActualSizeAvailable(
             const SceneManager* scene_manager) const;
         [[nodiscard]] bool isGTComparisonActualSizeActive() const {
-            return gt_comparison_actual_size_state_.presented;
+            return gt_comparison_published_actual_frame_.has_value();
         }
         [[nodiscard]] glm::ivec2 getGTComparisonCropOrigin() const {
-            return gt_comparison_actual_size_state_.crop.origin;
+            return gt_comparison_published_actual_frame_
+                       ? gt_comparison_published_actual_frame_->crop.origin
+                       : glm::ivec2{0, 0};
         }
         void setGTComparisonCropOrigin(glm::ivec2 origin);
 
@@ -752,10 +754,19 @@ namespace lfs::vis {
         };
 
         struct GTComparisonActualFrame {
+            struct Snapshot {
+                detail::GTComparisonSourceKey source_key;
+                uint64_t source_generation = 0;
+                glm::ivec2 full_extent{0, 0};
+                glm::ivec2 framebuffer_extent{0, 0};
+                detail::GTComparisonCrop crop{};
+            };
+
             GTComparisonImageStatus status = GTComparisonImageStatus::Loading;
             std::shared_ptr<lfs::core::Tensor> tile;
             std::shared_ptr<lfs::core::Tensor> fallback;
             std::optional<detail::GTComparisonPixelRegion> pixel_region;
+            std::optional<Snapshot> snapshot;
             glm::ivec4 content_rect{0, 0, 0, 0};
             std::string error;
         };
@@ -784,6 +795,9 @@ namespace lfs::vis {
         void invalidateGTComparisonImageCache();
         void invalidateGTComparisonActualSizeTile();
         void invalidateGTComparisonActualSizeResources();
+        void publishGTComparisonActualFrame(
+            const GTComparisonActualFrame::Snapshot& snapshot);
+        void clearPublishedGTComparisonActualFrame();
         void insertGTComparisonImageCacheEntry(
             const GTComparisonPreviewRequest& request,
             std::shared_ptr<lfs::core::Tensor> image,
@@ -911,7 +925,6 @@ namespace lfs::vis {
             std::optional<detail::GTComparisonTileKey> tile_key;
             std::shared_ptr<lfs::core::Tensor> visible_tile;
             std::shared_ptr<lfs::core::Tensor> fit_fallback;
-            bool presented = false;
 
             void invalidateTile() {
                 tile_key.reset();
@@ -940,6 +953,8 @@ namespace lfs::vis {
         std::condition_variable_any gt_comparison_image_cv_;
         std::jthread gt_comparison_image_worker_;
         GTComparisonActualSizeState gt_comparison_actual_size_state_;
+        std::optional<GTComparisonActualFrame::Snapshot>
+            gt_comparison_published_actual_frame_;
         // #1574 GT depth/normal async hold-then-swap: at most one outstanding ticket.
         // Panel keeps gt_async_held_display_ until the next ticket delivers (never blank).
         std::uint64_t gt_async_depth_ticket_ = 0;
@@ -996,6 +1011,7 @@ namespace lfs::vis {
         lfs::event::ScopedHandler event_handlers_;
 
         friend class RenderingManagerEventsTest_SceneClearedResetsFrustumLoaderSyncCache_Test;
+        friend class RenderingManagerActualSizeStateTest_PublishesOnlyAtCommitAndRetainsAcrossResourceInvalidation_Test;
         friend class SceneManager;
     };
 

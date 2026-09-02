@@ -1170,6 +1170,7 @@ namespace lfs::vis {
         // hidden, so model-change tracking never clears the stale image.
         if (!has_render_content) {
             clearVulkanViewportImageState();
+            clearPublishedGTComparisonActualFrame();
             vulkan_viewport_coordinate_size_ = current_size;
             last_logged_vksplat_render_error_.clear();
             viewport_artifact_service_.clearViewportOutput();
@@ -1369,6 +1370,8 @@ namespace lfs::vis {
         std::string render_error;
         bool rendered_image_contains_ground_truth = false;
         bool rendered_gt_actual_size = false;
+        std::optional<GTComparisonActualFrame::Snapshot>
+            rendered_gt_actual_snapshot;
         glm::ivec2 rendered_gt_content_size{0, 0};
         std::optional<SplitViewInfo> rendered_split_info;
         VulkanSplitViewParams pending_split_view{};
@@ -1782,7 +1785,6 @@ namespace lfs::vis {
 
                     if (gt_mode == GTComparisonMode::RGB) {
                         if (camera->image_path().empty() || !camera->has_image()) {
-                            gt_comparison_actual_size_state_.presented = false;
                             gt_error = "RGB GT comparison requires a source image";
                         } else {
                             const bool undistort_requested =
@@ -1809,19 +1811,18 @@ namespace lfs::vis {
                                     gt_pixel_region = actual_frame.pixel_region;
                                     gt_actual_content_rect = actual_frame.content_rect;
                                     rendered_gt_actual_size = true;
+                                    rendered_gt_actual_snapshot =
+                                        actual_frame.snapshot;
                                 } else if (
                                     actual_frame.status == GTComparisonImageStatus::Loading) {
-                                    gt_comparison_actual_size_state_.presented = false;
                                     gt_image = actual_frame.fallback;
                                     gt_loading = !gt_image;
                                 } else {
-                                    gt_comparison_actual_size_state_.presented = false;
                                     gt_error = actual_frame.error.empty()
                                                    ? "RGB GT comparison could not load the full-resolution source"
                                                    : actual_frame.error;
                                 }
                             } else {
-                                gt_comparison_actual_size_state_.presented = false;
                                 // Fit comparison loads a viewport-scaled preview. Do not publish
                                 // that transient size on the shared camera; training uses image
                                 // dimensions as its raster target and may run concurrently.
@@ -1902,7 +1903,6 @@ namespace lfs::vis {
                             }
                         }
                     } else if (gt_mode == GTComparisonMode::Depth) {
-                        gt_comparison_actual_size_state_.presented = false;
                         if (!camera->has_depth()) {
                             gt_error = "Depth GT comparison requires a depth map for the selected camera";
                         } else {
@@ -3530,6 +3530,12 @@ namespace lfs::vis {
             if (!pending_split_view.enabled) {
                 release_inactive_split_outputs();
             }
+            if (pending_split_view.enabled && rendered_gt_actual_size &&
+                rendered_gt_actual_snapshot) {
+                publishGTComparisonActualFrame(*rendered_gt_actual_snapshot);
+            } else {
+                clearPublishedGTComparisonActualFrame();
+            }
             return result;
         }
 
@@ -3590,6 +3596,7 @@ namespace lfs::vis {
             LOG_ERROR("Failed to render Vulkan viewport image: {}",
                       render_error.empty() ? "missing image payload" : render_error);
             clearVulkanViewportImageState();
+            clearPublishedGTComparisonActualFrame();
             return {};
         }
 
@@ -3624,6 +3631,13 @@ namespace lfs::vis {
             split_info_resources.split_info = std::move(*rendered_split_info);
         }
         split_view_service_.updateInfo(split_info_resources);
+
+        if (pending_split_view.enabled && rendered_gt_actual_size &&
+            rendered_gt_actual_snapshot) {
+            publishGTComparisonActualFrame(*rendered_gt_actual_snapshot);
+        } else {
+            clearPublishedGTComparisonActualFrame();
+        }
 
         return {.image = vulkan_viewport_image_,
                 .image_generation = vulkan_viewport_image_generation_,

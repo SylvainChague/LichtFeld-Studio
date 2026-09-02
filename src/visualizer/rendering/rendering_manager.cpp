@@ -507,19 +507,31 @@ namespace lfs::vis {
     }
 
     void RenderingManager::setGTComparisonCropOrigin(const glm::ivec2 origin) {
-        if (!gt_comparison_actual_size_state_.presented) {
+        if (!gt_comparison_published_actual_frame_) {
+            return;
+        }
+        const auto& published = *gt_comparison_published_actual_frame_;
+        if (gt_comparison_actual_size_state_.source_key != published.source_key ||
+            gt_comparison_actual_size_state_.source_generation !=
+                published.source_generation) {
             return;
         }
         const auto crop = detail::clampGTComparisonCrop(
-            gt_comparison_actual_size_state_.full_extent,
-            gt_comparison_actual_size_state_.framebuffer_extent,
+            published.full_extent,
+            published.framebuffer_extent,
             origin);
-        if (!crop.valid() ||
-            crop.origin == gt_comparison_actual_size_state_.crop.origin) {
+        if (!crop.valid()) {
             return;
         }
-        gt_comparison_actual_size_state_.crop = crop;
-        invalidateGTComparisonActualSizeTile();
+        const bool crop_changed =
+            crop.origin != gt_comparison_actual_size_state_.crop.origin;
+        if (!crop_changed && crop.origin == published.crop.origin) {
+            return;
+        }
+        if (crop_changed) {
+            gt_comparison_actual_size_state_.crop = crop;
+            invalidateGTComparisonActualSizeTile();
+        }
         markDirty(DirtyFlag::SPLIT_VIEW);
     }
 
@@ -1024,6 +1036,7 @@ namespace lfs::vis {
 
         if (result.clear_viewport_output) {
             viewport_artifact_service_.clearViewportOutput();
+            clearPublishedGTComparisonActualFrame();
         }
         if (splitViewUsesGTComparison(result.previous_mode) &&
             !splitViewUsesGTComparison(result.current_mode)) {
