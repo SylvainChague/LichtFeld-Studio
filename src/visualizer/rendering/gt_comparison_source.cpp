@@ -431,9 +431,29 @@ namespace lfs::vis {
         split_left_source_size_ = {0, 0};
         split_left_source_camera_uid_ = -1;
         split_left_source_undistorted_ = false;
-        split_left_image_generation_ = 0;
         gt_comparison_loading_placeholder_.reset();
         gt_comparison_failed_placeholder_.reset();
+    }
+
+    void RenderingManager::updateSplitLeftCpuSourceIdentity(
+        const lfs::core::Tensor* source,
+        const glm::ivec2 size,
+        const int camera_uid,
+        const bool undistorted) {
+        if (source == split_left_source_ && size == split_left_source_size_ &&
+            camera_uid == split_left_source_camera_uid_ &&
+            undistorted == split_left_source_undistorted_) {
+            return;
+        }
+
+        split_left_source_ = source;
+        split_left_source_size_ = size;
+        split_left_source_camera_uid_ = camera_uid;
+        split_left_source_undistorted_ = undistorted;
+        // High bit keeps this counter disjoint from the per-frame
+        // split_view_image_generation_ space used by the same interop slots.
+        split_left_image_generation_ =
+            (split_left_image_generation_ + 1) | SPLIT_LEFT_GENERATION_BIT;
     }
 
     void RenderingManager::invalidateGTComparisonActualSizeTile() {
@@ -470,7 +490,6 @@ namespace lfs::vis {
         split_left_source_size_ = {0, 0};
         split_left_source_camera_uid_ = -1;
         split_left_source_undistorted_ = false;
-        split_left_image_generation_ = 0;
     }
 
     void RenderingManager::publishGTComparisonActualFrame(

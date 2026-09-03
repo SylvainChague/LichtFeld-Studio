@@ -1442,19 +1442,9 @@ namespace lfs::vis {
             if (!image || !image->is_valid()) {
                 return {};
             }
-            if (image->device() == lfs::core::Device::CPU &&
-                (image.get() != split_left_source_ || size != split_left_source_size_ ||
-                 camera_uid != split_left_source_camera_uid_ ||
-                 undistorted != split_left_source_undistorted_)) {
-                split_left_source_ = image.get();
-                split_left_source_size_ = size;
-                split_left_source_camera_uid_ = camera_uid;
-                split_left_source_undistorted_ = undistorted;
-                // High bit keeps this counter disjoint from the per-frame
-                // split_view_image_generation_ space so slot-side comparisons
-                // can never collide across the two counters.
-                split_left_image_generation_ =
-                    (split_left_image_generation_ + 1) | SPLIT_LEFT_GENERATION_BIT;
+            if (image->device() == lfs::core::Device::CPU) {
+                updateSplitLeftCpuSourceIdentity(
+                    image.get(), size, camera_uid, undistorted);
             }
             if (image->device() == lfs::core::Device::CUDA) {
                 return image;

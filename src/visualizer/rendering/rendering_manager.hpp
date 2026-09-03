@@ -792,6 +792,11 @@ namespace lfs::vis {
             glm::ivec2 physical_viewport,
             cudaStream_t stream);
         void queueGTComparisonImagePrefetch(GTComparisonPreviewRequest request);
+        void updateSplitLeftCpuSourceIdentity(
+            const lfs::core::Tensor* source,
+            glm::ivec2 size,
+            int camera_uid,
+            bool undistorted);
         void invalidateGTComparisonImageCache();
         void invalidateGTComparisonActualSizeTile();
         void invalidateGTComparisonActualSizeResources();
@@ -1029,6 +1034,7 @@ namespace lfs::vis {
         friend class RenderingManagerEventsTest_SceneClearedResetsFrustumLoaderSyncCache_Test;
         friend class RenderingManagerActualSizeStateTest_PublishesOnlyAtCommitAndRetainsAcrossResourceInvalidation_Test;
         friend class RenderingManagerActualSizeFailureTest_KeyedCooldownRetainsFallbackAndAllowsRelevantChanges_Test;
+        friend class RenderingManagerGTComparisonGenerationTest_SplitLeftGenerationRemainsMonotonicAcrossInvalidations_Test;
         friend class SceneManager;
     };
 

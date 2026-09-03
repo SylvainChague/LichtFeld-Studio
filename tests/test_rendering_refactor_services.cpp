@@ -25,6 +25,7 @@
 #include "visualizer/rendering/split_view_service.hpp"
 #include "visualizer/rendering/viewport_artifact_service.hpp"
 #include "visualizer/rendering/viewport_frame_lifecycle_service.hpp"
+#include "visualizer/rendering/viewport_interop_service.hpp"
 #include "visualizer/rendering/viewport_request_builder.hpp"
 #include "visualizer/scene/scene_manager.hpp"
 
@@ -858,6 +859,63 @@ namespace lfs::vis {
         manager.clearPublishedGTComparisonActualFrame();
         EXPECT_FALSE(manager.isGTComparisonActualSizeActive());
         EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(0, 0));
+    }
+
+    TEST(RenderingManagerGTComparisonGenerationTest,
+         SplitLeftGenerationRemainsMonotonicAcrossInvalidations) {
+        RenderingManager manager;
+        auto source_a = lfs::core::Tensor::empty(
+            {3, 4, 6}, lfs::core::Device::CPU, lfs::core::DataType::UInt8);
+        auto source_b = lfs::core::Tensor::empty(
+            {3, 4, 6}, lfs::core::Device::CPU, lfs::core::DataType::UInt8);
+        auto source_c = lfs::core::Tensor::empty(
+            {3, 4, 6}, lfs::core::Device::CPU, lfs::core::DataType::UInt8);
+        constexpr glm::ivec2 source_size{6, 4};
+
+        manager.updateSplitLeftCpuSourceIdentity(
+            &source_a, source_size, 11, false);
+        const auto generation_a = manager.split_left_image_generation_;
+        EXPECT_NE(generation_a, 0u);
+        EXPECT_NE(generation_a & RenderingManager::SPLIT_LEFT_GENERATION_BIT, 0u);
+
+        manager.invalidateGTComparisonImageCache();
+        EXPECT_EQ(manager.split_left_image_generation_, generation_a);
+        EXPECT_EQ(manager.split_left_source_, nullptr);
+
+        manager.updateSplitLeftCpuSourceIdentity(
+            &source_b, source_size, 12, false);
+        const auto generation_b = manager.split_left_image_generation_;
+        EXPECT_GT(generation_b, generation_a);
+
+        lfs::vis::ViewportInteropSlotInputs interop{
+            .source_ok = true,
+            .frame_slot_in_range = true,
+            .target_present = true,
+            .target_size_matches = true,
+            .target_valid_size_matches = true,
+            .target_interop_valid = true,
+            .target_layout_read_only = true,
+            .source_generation = generation_b,
+            .uploaded_source_generation = generation_a};
+        EXPECT_NE(
+            lfs::vis::decideViewportInteropEarly(interop).action,
+            lfs::vis::ViewportInteropAction::CacheHit);
+
+        interop.uploaded_source_generation = generation_b;
+        EXPECT_EQ(
+            lfs::vis::decideViewportInteropEarly(interop).action,
+            lfs::vis::ViewportInteropAction::CacheHit);
+        manager.updateSplitLeftCpuSourceIdentity(
+            &source_b, source_size, 12, false);
+        EXPECT_EQ(manager.split_left_image_generation_, generation_b);
+
+        manager.invalidateGTComparisonActualSizeResources();
+        EXPECT_EQ(manager.split_left_image_generation_, generation_b);
+        EXPECT_EQ(manager.split_left_source_, nullptr);
+
+        manager.updateSplitLeftCpuSourceIdentity(
+            &source_c, source_size, 13, true);
+        EXPECT_GT(manager.split_left_image_generation_, generation_b);
     }
 
     TEST(RenderingManagerActualSizeFailureTest,
