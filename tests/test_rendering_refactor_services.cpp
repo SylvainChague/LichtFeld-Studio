@@ -1110,7 +1110,7 @@ namespace lfs::vis {
         std::filesystem::remove(image_path);
     }
 
-    TEST(CameraImageLoadTest, LosslessRgb8LoaderPreservesNativeBytesAndChannelPolicy) {
+    TEST(CameraImageLoadTest, NativeResolutionRgb8LoaderPreservesEightBitBytesAndChannelPolicy) {
         using lfs::core::DataType;
         using lfs::core::Device;
         using lfs::core::TensorShape;
@@ -1121,7 +1121,7 @@ namespace lfs::vis {
         const auto stamp = std::to_string(
             std::chrono::steady_clock::now().time_since_epoch().count());
         const auto root = std::filesystem::temp_directory_path() /
-                          ("lfs_gt_lossless_" + stamp);
+                          ("lfs_gt_rgb8_native_" + stamp);
         std::filesystem::create_directories(root);
 
         std::vector<std::uint8_t> gray(pixel_count);
@@ -1152,8 +1152,8 @@ namespace lfs::vis {
         ASSERT_NO_THROW(writeU8Image(rgba_path, width, height, 4, rgba));
         ASSERT_NO_THROW(writeU8Image(jpeg_path, width, height, 3, rgb));
 
-        const auto loaded_rgb = lfs::core::load_image_rgb8_chw_lossless(rgb_path);
-        const auto repeated_rgb = lfs::core::load_image_rgb8_chw_lossless(rgb_path);
+        const auto loaded_rgb = lfs::core::load_image_rgb8_chw_native_resolution(rgb_path);
+        const auto repeated_rgb = lfs::core::load_image_rgb8_chw_native_resolution(rgb_path);
         ASSERT_TRUE(loaded_rgb.is_valid());
         EXPECT_EQ(loaded_rgb.device(), Device::CPU);
         EXPECT_EQ(loaded_rgb.dtype(), DataType::UInt8);
@@ -1168,7 +1168,7 @@ namespace lfs::vis {
                                          const std::vector<std::uint8_t>& expected_r,
                                          const std::vector<std::uint8_t>& expected_g,
                                          const std::vector<std::uint8_t>& expected_b) {
-            const auto loaded = lfs::core::load_image_rgb8_chw_lossless(path);
+            const auto loaded = lfs::core::load_image_rgb8_chw_native_resolution(path);
             const auto values = loaded.to_vector_uint8();
             ASSERT_EQ(values.size(), 3 * pixel_count);
             for (std::size_t index = 0; index < pixel_count; ++index) {
@@ -1205,12 +1205,12 @@ namespace lfs::vis {
         expect_channels(rgba_path, rgba_r, rgba_g, rgba_b);
 
         const auto jpeg_first =
-            lfs::core::load_image_rgb8_chw_lossless(jpeg_path).to_vector_uint8();
+            lfs::core::load_image_rgb8_chw_native_resolution(jpeg_path).to_vector_uint8();
         const auto jpeg_second =
-            lfs::core::load_image_rgb8_chw_lossless(jpeg_path).to_vector_uint8();
+            lfs::core::load_image_rgb8_chw_native_resolution(jpeg_path).to_vector_uint8();
         EXPECT_EQ(jpeg_first, jpeg_second);
         EXPECT_THROW(
-            (void)lfs::core::load_image_rgb8_chw_lossless(root / "missing.png"),
+            (void)lfs::core::load_image_rgb8_chw_native_resolution(root / "missing.png"),
             std::runtime_error);
 
         std::filesystem::remove_all(root);

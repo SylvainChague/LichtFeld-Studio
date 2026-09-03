@@ -814,7 +814,7 @@ namespace lfs::vis {
             if (const auto* full =
                     std::get_if<GTComparisonFullSourceRequest>(&request)) {
                 try {
-                    auto source = lfs::core::load_image_rgb8_chw_lossless(
+                    auto source = lfs::core::load_image_rgb8_chw_native_resolution(
                         full->source_key.image_path);
                     image = std::make_shared<lfs::core::Tensor>(std::move(source));
                 } catch (const std::exception& exception) {

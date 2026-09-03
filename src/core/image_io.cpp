@@ -688,7 +688,7 @@ namespace lfs::core {
         return ::load_image_t<unsigned char>(std::move(p), -1, max_width, true, used_exif_thumbnail);
     }
 
-    Tensor load_image_rgb8_chw_lossless(const std::filesystem::path& path) {
+    Tensor load_image_rgb8_chw_native_resolution(const std::filesystem::path& path) {
         const std::string path_utf8 = path_to_utf8(path);
         auto [pixels, width, height, channels] = load_image(path, 1, 0);
         if (!pixels || width <= 0 || height <= 0 || channels != 3) {
