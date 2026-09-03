@@ -856,6 +856,8 @@ namespace lfs::vis {
         manager.publishGTComparisonActualFrame(replacement);
         EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(60, 30));
 
+        // The production presentation path clears the snapshot when a newly
+        // assembled Fit fallback replaces the native frame.
         manager.clearPublishedGTComparisonActualFrame();
         EXPECT_FALSE(manager.isGTComparisonActualSizeActive());
         EXPECT_EQ(manager.getGTComparisonCropOrigin(), glm::ivec2(0, 0));

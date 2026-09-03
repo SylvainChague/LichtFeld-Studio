@@ -2240,6 +2240,11 @@ def is_gt_comparison_actual_size_available() -> bool:
     Return whether the selected GT camera supports RGB perspective 1:1 pixel mode, including usable saved undistortion calibration when distortion is present. Legacy projects may require dataset reimport and resave.
     """
 
+def is_gt_comparison_actual_size_active() -> bool:
+    """
+    Return whether the currently published viewport frame uses GT comparison 1:1 pixel mode.
+    """
+
 def cycle_gt_comparison_mode() -> str:
     """Cycle ground-truth comparison mode: rgb -> normal -> depth -> rgb."""
 

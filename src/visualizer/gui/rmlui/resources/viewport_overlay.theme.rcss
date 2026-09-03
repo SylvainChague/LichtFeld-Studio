@@ -212,6 +212,18 @@
     color: @{background};
 }
 
+#gt-compare-mode-block .viewport-gt-compare-actual-size.transitioning {
+    color: @{primary};
+    background-color: @{alpha(primary,0.12)};
+    border-color: @{alpha(primary,0.65)};
+}
+
+#gt-compare-mode-block .viewport-gt-compare-actual-size.selected.transitioning {
+    color: @{background};
+    background-color: @{primary};
+    border-color: @{alpha(text,0.65)};
+}
+
 #gt-compare-mode-block .viewport-gt-compare-actual-size.selected.disabled {
     color: @{text_dim};
 }

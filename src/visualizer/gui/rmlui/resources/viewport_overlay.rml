@@ -804,10 +804,11 @@
                         <option value="depth">@tr:ui.depth</option>
                     </select>
                     <button class="icon-btn viewport-gt-compare-actual-size"
-                            data-class-selected="gt_compare_actual_size"
+                            data-class-selected="gt_compare_actual_size_active"
+                            data-class-transitioning="gt_compare_actual_size_transitioning"
                             data-class-disabled="!gt_compare_actual_size_available"
                             data-attrif-disabled="!gt_compare_actual_size_available"
-                            data-tooltip="tooltip.gt_compare_actual_size"
+                            data-attr-title="gt_compare_actual_size_tooltip"
                             data-event-click="gt_compare_toggle_actual_size">1:1</button>
                 </div>
             </div>

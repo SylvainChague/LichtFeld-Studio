@@ -4263,6 +4263,19 @@ namespace lfs::python {
             "Legacy projects may require dataset reimport and resave.");
 
         m.def(
+            "is_gt_comparison_actual_size_active",
+            []() {
+                return invoke_on_viewer(
+                    []() {
+                        auto* rm = lfs::python::get_rendering_manager();
+                        return rm && rm->isGTComparisonActualSizeActive();
+                    },
+                    false);
+            },
+            "Return whether the currently published viewport frame uses GT comparison "
+            "1:1 pixel mode.");
+
+        m.def(
             "cycle_gt_comparison_mode",
             []() -> const char* {
                 auto* rm = lfs::python::get_rendering_manager();
