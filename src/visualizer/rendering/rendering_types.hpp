@@ -311,6 +311,7 @@ namespace lfs::vis {
         // Split view
         SplitViewMode split_view_mode = SplitViewMode::Disabled;
         GTComparisonMode gt_comparison_mode = GTComparisonMode::RGB;
+        bool gt_comparison_actual_size = false;
         float split_position = 0.5f;
         size_t split_view_offset = 0;
 
@@ -402,6 +403,9 @@ namespace lfs::vis {
         default:
             settings.gt_comparison_mode = GTComparisonMode::RGB;
             break;
+        }
+        if (settings.gt_comparison_mode != GTComparisonMode::RGB) {
+            settings.gt_comparison_actual_size = false;
         }
     }
 
