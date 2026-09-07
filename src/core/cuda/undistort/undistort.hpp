@@ -21,6 +21,16 @@ namespace lfs::core {
         bool crop_solve_failed = false;
     };
 
+    namespace detail {
+
+        UndistortParams initialize_undistort_params(
+            float fx, float fy, float cx, float cy,
+            int width, int height,
+            const Tensor& radial, const Tensor& tangential,
+            CameraModelType model);
+
+    } // namespace detail
+
     UndistortParams compute_undistort_params(
         float fx, float fy, float cx, float cy,
         int width, int height,
@@ -31,6 +41,15 @@ namespace lfs::core {
         const UndistortParams& params, const int actual_src_width, const int actual_src_height);
 
     Tensor undistort_image(const Tensor& src, const UndistortParams& params, cudaStream_t stream);
+
+    Tensor undistort_image_region(
+        const Tensor& source,
+        const UndistortParams& params,
+        int destination_x,
+        int destination_y,
+        int width,
+        int height,
+        cudaStream_t stream);
 
     Tensor undistort_mask(const Tensor& src, const UndistortParams& params, cudaStream_t stream);
 
