@@ -271,8 +271,9 @@ namespace lfs::vis {
         }
 
         struct TrainingSceneInitializationRollback {
-            explicit TrainingSceneInitializationRollback(lfs::core::Scene& scene)
+            explicit TrainingSceneInitializationRollback(lfs::core::Scene& scene, std::shared_mutex& render_mutex)
                 : scene(&scene),
+                  render_mutex(render_mutex),
                   initial_point_cloud(scene.getInitialPointCloud()),
                   point_cloud_modified(scene.isPointCloudModified()) {
                 const auto* const model_node =
@@ -343,6 +344,7 @@ namespace lfs::vis {
 
             void restore() noexcept {
                 try {
+                    std::unique_lock scene_lock(render_mutex);
                     for (const auto& [camera, split] : camera_splits) {
                         if (camera) {
                             camera->set_split(split);
@@ -379,6 +381,7 @@ namespace lfs::vis {
             }
 
             lfs::core::Scene* scene = nullptr;
+            std::shared_mutex& render_mutex;
             bool had_model = false;
             std::string model_name;
             std::unique_ptr<lfs::core::SplatData> original_model;
@@ -1152,7 +1155,7 @@ namespace lfs::vis {
             // the model/node state that initialization may replace, so a failed
             // allocator or trainer setup cannot leave a half-started scene.
             std::unique_lock scene_lock(trainer_->getRenderMutex());
-            scene_rollback.emplace(*scene_);
+            scene_rollback.emplace(*scene_, trainer_->getRenderMutex());
         }
 
         const auto& params = trainer_->getParams();

@@ -14,6 +14,7 @@
 #include "diagnostics/vram_profiler.hpp"
 #include "gt_comparison_cache_utils.hpp"
 #include "io/pipelined_image_loader.hpp"
+#include "live_model_lock.hpp"
 #include "model_renderability.hpp"
 #include "point_cloud_vulkan_renderer.hpp"
 #include "rendering/image_layout.hpp"
@@ -107,64 +108,6 @@ namespace lfs::vis {
             state.viewport_foveation = params.viewport_foveation;
             state.orthographic = params.orthographic;
             return state;
-        }
-
-        struct LiveModelLockBundle {
-            std::shared_lock<std::shared_mutex> lock;
-            const lfs::core::Scene* scene = nullptr;
-            LiveModelLockBundle() = default;
-            LiveModelLockBundle(std::shared_lock<std::shared_mutex>&& l, const lfs::core::Scene* s)
-                : lock(std::move(l)),
-                  scene(s) {
-                if (scene && lock.owns_lock()) {
-                    scene->noteLiveModelLockAcquired();
-                }
-            }
-            LiveModelLockBundle(LiveModelLockBundle&& other) noexcept
-                : lock(std::move(other.lock)),
-                  scene(other.scene) {
-                other.scene = nullptr;
-            }
-            LiveModelLockBundle& operator=(LiveModelLockBundle&& other) noexcept {
-                if (this != &other) {
-                    if (scene && lock.owns_lock()) {
-                        scene->noteLiveModelLockReleased();
-                    }
-                    lock = std::move(other.lock);
-                    scene = other.scene;
-                    other.scene = nullptr;
-                }
-                return *this;
-            }
-            ~LiveModelLockBundle() {
-                if (scene && lock.owns_lock()) {
-                    scene->noteLiveModelLockReleased();
-                }
-            }
-            LiveModelLockBundle(const LiveModelLockBundle&) = delete;
-            LiveModelLockBundle& operator=(const LiveModelLockBundle&) = delete;
-            [[nodiscard]] bool owns_lock() const { return lock.owns_lock(); }
-        };
-
-        [[nodiscard]] std::optional<LiveModelLockBundle> acquireLiveModelRenderLock(
-            const SceneManager* const scene_manager,
-            const bool try_lock = false) {
-            if (const auto* tm = scene_manager ? scene_manager->getTrainerManager() : nullptr) {
-                if (const auto* trainer = tm->getTrainer()) {
-                    const lfs::core::Scene* scene = trainer->getScene();
-                    if (try_lock) {
-                        std::shared_lock<std::shared_mutex> candidate(
-                            trainer->getRenderMutex(), std::try_to_lock);
-                        if (!candidate.owns_lock()) {
-                            return std::nullopt;
-                        }
-                        return LiveModelLockBundle(std::move(candidate), scene);
-                    }
-                    return LiveModelLockBundle(
-                        std::shared_lock<std::shared_mutex>(trainer->getRenderMutex()), scene);
-                }
-            }
-            return std::nullopt;
         }
 
         [[nodiscard]] bool isRetryableSharedScratchUnavailable(const std::string_view error) {

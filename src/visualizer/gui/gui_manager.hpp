@@ -65,6 +65,7 @@ namespace lfs::vis {
     class VisualizerImplResetTest_StartupOffersRecoveryAfterUncleanShutdown_Test;
     class VisualizerImplResetTest_StartupWithCleanLastSessionLeavesBlankSession_Test;
     class VisualizerImplResetTest_UiVisibilityWaitsForMatchingFrame_Test;
+    class VisualizerImplResetTest_GuiGuidesSkipContendedSceneAndRecoverOnNextFrame_Test;
     class VisualizerImplResetTest_UiVisibilityTimeoutCommitsRequestedLayout_Test;
     class VisualizerImplResetTest_RecoveryDismissalPersistsAndNewerCandidateIsOffered_Test;
     class VisualizerImplResetTest_RecoverThenCleanQuitDoesNotReoffer_Test;
@@ -248,6 +249,7 @@ namespace lfs::vis {
             friend class lfs::vis::VisualizerImplResetTest_StartupOffersRecoveryAfterUncleanShutdown_Test;
             friend class lfs::vis::VisualizerImplResetTest_StartupWithCleanLastSessionLeavesBlankSession_Test;
             friend class lfs::vis::VisualizerImplResetTest_UiVisibilityWaitsForMatchingFrame_Test;
+            friend class lfs::vis::VisualizerImplResetTest_GuiGuidesSkipContendedSceneAndRecoverOnNextFrame_Test;
             friend class lfs::vis::VisualizerImplResetTest_UiVisibilityTimeoutCommitsRequestedLayout_Test;
             friend class lfs::vis::VisualizerImplResetTest_RecoveryDismissalPersistsAndNewerCandidateIsOffered_Test;
             friend class lfs::vis::VisualizerImplResetTest_RecoverThenCleanQuitDoesNotReoffer_Test;

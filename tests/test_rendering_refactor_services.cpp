@@ -8,6 +8,7 @@
 #include "core/events.hpp"
 #include "core/image_io.hpp"
 #include "core/image_loader.hpp"
+#include "core/mesh_data.hpp"
 #include "core/point_cloud.hpp"
 #include "core/scene.hpp"
 #include "core/services.hpp"
@@ -17,6 +18,7 @@
 #include "rendering/coordinate_conventions.hpp"
 #include "visualizer/gui_capabilities.hpp"
 #include "visualizer/rendering/gt_comparison_cache_utils.hpp"
+#include "visualizer/rendering/live_model_lock.hpp"
 #include "visualizer/rendering/render_pass.hpp"
 #include "visualizer/rendering/rendering_manager.hpp"
 #include "visualizer/rendering/split_view_composition.hpp"
@@ -28,6 +30,7 @@
 #include "visualizer/scene/scene_manager.hpp"
 
 #include <array>
+#include <barrier>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -36,6 +39,9 @@
 #include <filesystem>
 #include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <vector>
 
@@ -219,6 +225,202 @@ namespace lfs::vis {
             lfs::core::event::bus().clear_all();
         }
     };
+
+    namespace {
+        std::shared_ptr<lfs::core::Camera> makeLockTestCamera(const int uid) {
+            using lfs::core::Device;
+            using lfs::core::Tensor;
+            return std::make_shared<lfs::core::Camera>(
+                Tensor::eye(3, Device::CPU), Tensor::zeros({3}, Device::CPU),
+                100.0f, 100.0f, 32.0f, 32.0f, Tensor(), Tensor(),
+                lfs::core::CameraModelType::PINHOLE,
+                "camera.png", std::filesystem::path{}, std::filesystem::path{},
+                64, 64, uid);
+        }
+    } // namespace
+
+    class LiveModelLockTest : public SceneManagerRenderStateTest {
+    protected:
+        void SetUp() override {
+            SceneManagerRenderStateTest::SetUp();
+            if (!has_cuda_device()) {
+                GTEST_SKIP() << "Trainer requires CUDA";
+            }
+            manager_ = std::make_unique<SceneManager>();
+            trainer_manager_ = std::make_unique<TrainerManager>();
+            services().set(manager_.get());
+            services().set(trainer_manager_.get());
+            auto& scene = manager_->getScene();
+            scene.addCamera("Before", lfs::core::NULL_NODE, makeLockTestCamera(0));
+            trainer_manager_->setScene(&scene);
+            trainer_manager_->setTrainer(std::make_unique<lfs::training::Trainer>(scene));
+        }
+
+        void TearDown() override {
+            SceneManagerRenderStateTest::TearDown();
+            trainer_manager_.reset();
+            manager_.reset();
+        }
+
+        std::unique_ptr<SceneManager> manager_;
+        std::unique_ptr<TrainerManager> trainer_manager_;
+    };
+
+    TEST_F(SceneManagerRenderStateTest, MissingTrainerDoesNotAcquireLiveModelLock) {
+        SceneManager manager;
+        const auto initial_depth = lfs::core::Scene::live_model_lock_depth();
+        EXPECT_FALSE(acquireLiveModelRenderLock(nullptr, true));
+        EXPECT_FALSE(acquireLiveModelRenderLock(&manager, true));
+        EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth);
+        manager.getScene().addPointCloud("Points", makeTestPointCloud());
+        EXPECT_NE(manager.buildRenderState().point_cloud, nullptr);
+    }
+
+    TEST_F(LiveModelLockTest, ContentionSkipsTraversalThenReadsMutatedSceneWithoutMeshes) {
+        auto& scene = manager_->getScene();
+        const auto points = scene.addPointCloud("Points", makeTestPointCloud());
+        scene.addCropBox("Crop", points);
+        const auto after_camera = makeLockTestCamera(1);
+        const auto after = scene.addCamera("After", lfs::core::NULL_NODE, after_camera);
+        {
+            auto guard = acquireLiveModelRenderLock(manager_.get(), true);
+            ASSERT_TRUE(guard);
+            EXPECT_EQ(scene.getAllCamerasCached().size(), 2u);
+            EXPECT_EQ(scene.getVisibleCamerasCached().size(), 2u);
+            EXPECT_EQ(manager_->buildRenderState().camera_scene_transforms.size(), 2u);
+        }
+
+        std::barrier phase(2);
+        std::jthread writer([&] {
+            std::unique_lock lock(trainer_manager_->getTrainer()->getRenderMutex());
+            phase.arrive_and_wait();
+            phase.arrive_and_wait();
+            // Removing an interior node shifts camera-owning slots too.
+            scene.removeNodeById(points, false);
+            scene.setNodeTransform(after, glm::translate(glm::mat4(1.0f), glm::vec3(2.0f, 3.0f, 4.0f)));
+        });
+        phase.arrive_and_wait();
+        const auto initial_depth = lfs::core::Scene::live_model_lock_depth();
+        auto contested = acquireLiveModelRenderLock(manager_.get(), true);
+        EXPECT_FALSE(contested);
+        EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth);
+        phase.arrive_and_wait();
+        writer.join();
+
+        auto guard = acquireLiveModelRenderLock(manager_.get(), true);
+        ASSERT_TRUE(guard);
+        const auto state = manager_->buildRenderState();
+        EXPECT_EQ(scene.getNodeById(points), nullptr);
+        ASSERT_EQ(scene.getAllCamerasCached().size(), 2u);
+        EXPECT_EQ(scene.getAllCamerasCached().back(), after_camera);
+        ASSERT_EQ(scene.getVisibleCamerasCached().size(), 2u);
+        EXPECT_EQ(scene.getVisibleCamerasCached().back(), after_camera);
+        const auto transforms = scene.getVisibleCameraSceneTransforms();
+        ASSERT_EQ(transforms.size(), 2u);
+        EXPECT_EQ(glm::vec3(transforms.back()[3]), glm::vec3(2.0f, 3.0f, 4.0f));
+        ASSERT_EQ(state.camera_scene_transforms.size(), 2u);
+        expectVisualizerTranslationFromData(state.camera_scene_transforms.back(), {2.0f, 3.0f, 4.0f});
+        EXPECT_TRUE(state.meshes.empty());
+        EXPECT_TRUE(scene.getVisibleMeshes().empty());
+        EXPECT_TRUE(state.cropboxes.empty());
+        EXPECT_EQ(state.point_cloud, nullptr);
+    }
+
+    TEST_F(LiveModelLockTest, MovesTransferOwnershipAndBalanceLockDepth) {
+        auto& scene = manager_->getScene();
+        const auto initial_depth = lfs::core::Scene::live_model_lock_depth();
+        std::shared_mutex other_mutex;
+        {
+            auto acquired = acquireLiveModelRenderLock(manager_.get());
+            ASSERT_TRUE(acquired);
+            EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth + 1);
+            LiveModelLockBundle moved(std::move(*acquired));
+            EXPECT_FALSE(acquired->owns_lock());
+            acquired.reset();
+            EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth + 1);
+
+            LiveModelLockBundle target(std::shared_lock<std::shared_mutex>(other_mutex), &scene);
+            EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth + 2);
+            target = std::move(moved);
+            EXPECT_FALSE(moved.owns_lock());
+            EXPECT_TRUE(target.owns_lock());
+            EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth + 1);
+
+            bool old_mutex_released = false;
+            bool trainer_mutex_excluded = false;
+            std::jthread check([&] {
+                std::unique_lock old_lock(other_mutex, std::try_to_lock);
+                std::unique_lock trainer_lock(trainer_manager_->getTrainer()->getRenderMutex(), std::try_to_lock);
+                old_mutex_released = old_lock.owns_lock();
+                trainer_mutex_excluded = !trainer_lock.owns_lock();
+            });
+            check.join();
+            EXPECT_TRUE(old_mutex_released);
+            EXPECT_TRUE(trainer_mutex_excluded);
+        }
+        EXPECT_EQ(lfs::core::Scene::live_model_lock_depth(), initial_depth);
+        std::unique_lock lock(trainer_manager_->getTrainer()->getRenderMutex(), std::try_to_lock);
+        EXPECT_TRUE(lock.owns_lock());
+    }
+
+    TEST_F(LiveModelLockTest, WriterWaitsUntilBorrowedGuideDataHasBeenConsumed) {
+        auto& scene = manager_->getScene();
+        const auto temporary = scene.addGroup("Temporary");
+        const auto points = scene.addPointCloud("Points", makeTestPointCloud(), temporary);
+        const auto crop = scene.addCropBox("Crop", points);
+        const auto ellipsoid = scene.addEllipsoid("Ellipsoid", points);
+        ASSERT_NE(crop, lfs::core::NULL_NODE);
+        ASSERT_NE(ellipsoid, lfs::core::NULL_NODE);
+        scene.getCropBoxData(crop)->min = glm::vec3(-1.0f);
+        scene.getEllipsoidData(ellipsoid)->radii = glm::vec3(1.0f);
+        auto mesh = std::make_shared<lfs::core::MeshData>();
+        mesh->vertices = lfs::core::Tensor::zeros({3, 3}, lfs::core::Device::CPU);
+        scene.addMesh("Mesh", std::move(mesh), temporary);
+        scene.addCamera("After", lfs::core::NULL_NODE, makeLockTestCamera(1));
+
+        auto guard = acquireLiveModelRenderLock(manager_.get(), true);
+        ASSERT_TRUE(guard);
+        const auto state = manager_->buildRenderState();
+        ASSERT_EQ(state.cropboxes.size(), 1u);
+        ASSERT_EQ(state.ellipsoids.size(), 1u);
+        ASSERT_EQ(state.meshes.size(), 1u);
+        ASSERT_NE(state.cropboxes.front().data, nullptr);
+        ASSERT_NE(state.ellipsoids.front().data, nullptr);
+        ASSERT_NE(state.meshes.front().mesh, nullptr);
+
+        std::barrier attempted(2);
+        bool acquired_while_reading = false;
+        std::jthread writer([&] {
+            {
+                std::unique_lock lock(trainer_manager_->getTrainer()->getRenderMutex(), std::try_to_lock);
+                acquired_while_reading = lock.owns_lock();
+            }
+            attempted.arrive_and_wait();
+            if (acquired_while_reading) {
+                return;
+            }
+            std::unique_lock lock(trainer_manager_->getTrainer()->getRenderMutex());
+            scene.removeNodeById(temporary, false);
+        });
+        attempted.arrive_and_wait();
+        EXPECT_FALSE(acquired_while_reading);
+        // The snapshot borrows these payloads; construction alone is not enough.
+        EXPECT_EQ(state.cropboxes.front().data->min, glm::vec3(-1.0f));
+        EXPECT_EQ(state.ellipsoids.front().data->radii, glm::vec3(1.0f));
+        EXPECT_EQ(state.meshes.front().mesh->vertex_count(), 3);
+        guard.reset();
+        writer.join();
+
+        guard = acquireLiveModelRenderLock(manager_.get(), true);
+        ASSERT_TRUE(guard);
+        EXPECT_EQ(scene.getNodeById(temporary), nullptr);
+        EXPECT_TRUE(scene.getVisibleMeshes().empty());
+        const auto restored_state = manager_->buildRenderState();
+        EXPECT_TRUE(restored_state.cropboxes.empty());
+        EXPECT_TRUE(restored_state.ellipsoids.empty());
+        EXPECT_TRUE(restored_state.meshes.empty());
+        EXPECT_EQ(restored_state.camera_scene_transforms.size(), 2u);
+    }
 
     TEST(SplitViewServiceTest, ToggleGtComparisonRestoresPreviousProjectionMode) {
         SplitViewService service;

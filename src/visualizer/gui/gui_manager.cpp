@@ -66,6 +66,7 @@
 #include "python/ui_hooks.hpp"
 #include "rendering/coordinate_conventions.hpp"
 #include "rendering/image_layout.hpp"
+#include "rendering/live_model_lock.hpp"
 #include "rendering/passes/vulkan_viewport_pass.hpp"
 #include "rendering/rendering_manager.hpp"
 #include "rendering/screen_overlay_renderer.hpp"
@@ -5307,12 +5308,21 @@ namespace lfs::vis::gui {
             }
 
             if (viewer_) {
-                SceneManager* const scene_manager = viewer_->getSceneManager();
+                SceneManager* scene_manager = viewer_->getSceneManager();
+                // Acquire before buildRenderState's state_mutex_ and retain the lock
+                // until the guides have finished consuming borrowed scene data.
+                auto live_model_lock = acquireLiveModelRenderLock(scene_manager, true);
+                GizmoState gizmo_state = rendering_manager->getGizmoState();
+                if (const auto* tm = scene_manager ? scene_manager->getTrainerManager() : nullptr;
+                    tm && tm->getTrainer() && !live_model_lock) {
+                    scene_manager = nullptr;
+                    gizmo_state.cropbox_active = false;
+                    gizmo_state.ellipsoid_active = false;
+                }
                 std::optional<SceneRenderState> overlay_scene_state;
                 if (scene_manager && (settings.show_crop_box || settings.show_ellipsoid)) {
                     overlay_scene_state = scene_manager->buildRenderState();
                 }
-                const GizmoState gizmo_state = rendering_manager->getGizmoState();
                 appendVulkanSceneGuideOverlays(params,
                                                *viewer_,
                                                viewport_layout_,

@@ -53,6 +53,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -72,6 +73,7 @@
 #include <ranges>
 #include <span>
 #include <sstream>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -1627,6 +1629,105 @@ namespace lfs::vis {
         EXPECT_FALSE(gui->ui_hidden_);
         EXPECT_EQ(gui->viewport_layout_.pos, glm::vec2(20.0f, 30.0f));
         EXPECT_EQ(gui->viewport_layout_.size, glm::vec2(640.0f, 480.0f));
+    }
+
+    TEST_F(VisualizerImplResetTest,
+           GuiGuidesSkipContendedSceneAndRecoverOnNextFrame) {
+        if (!cuda_device_available()) {
+            GTEST_SKIP() << "CUDA device unavailable";
+        }
+        VisualizerImpl viewer(projectOptions());
+        auto* const gui = viewer.getGuiManager();
+        auto* const rendering = viewer.getRenderingManager();
+        auto& scene = viewer.getScene();
+        gui->viewport_layout_.pos = {0.0f, 0.0f};
+        gui->viewport_layout_.size = {640.0f, 480.0f};
+        const VkExtent2D extent{640, 480};
+        viewer.getViewport().camera.t = {0.0f, 0.0f, 5.0f};
+        viewer.getViewport().camera.R = glm::mat3(1.0f);
+
+        scene.addCamera("Camera", core::NULL_NODE, make_project_request_test_camera());
+        const auto points = scene.addPointCloud("Points", lfs::test::licht::make_point_cloud(2));
+        const auto crop = scene.addCropBox("Crop", points);
+        const auto ellipsoid = scene.addEllipsoid("Ellipsoid", points);
+        ASSERT_NE(crop, core::NULL_NODE);
+        ASSERT_NE(ellipsoid, core::NULL_NODE);
+        scene.getCropBoxData(crop)->min = glm::vec3(-1.0f);
+        scene.getCropBoxData(crop)->max = glm::vec3(1.0f);
+        scene.getEllipsoidData(ellipsoid)->radii = glm::vec3(1.0f);
+        viewer.getSceneManager()->selectNode(points);
+
+        auto settings = rendering->getSettings();
+        settings.show_grid = true;
+        settings.show_coord_axes = true;
+        settings.show_pivot = true;
+        settings.show_camera_frustums = false;
+        settings.show_crop_box = false;
+        settings.show_ellipsoid = false;
+        rendering->updateSettings(settings);
+        const auto independent = gui->buildVulkanViewportParams(extent, 0);
+        ASSERT_FALSE(independent.grid_overlays.empty());
+        ASSERT_FALSE(independent.shape_overlay_triangles.empty());
+        ASSERT_FALSE(independent.pivot_overlays.empty());
+        ASSERT_FALSE(independent.ui_shape_overlay_triangles.empty());
+
+        settings.show_camera_frustums = true;
+        rendering->updateSettings(settings);
+        const auto without_trainer = gui->buildVulkanViewportParams(extent, 0);
+        ASSERT_NE(without_trainer.frustum_overlay_data, nullptr);
+        ASSERT_FALSE(without_trainer.frustum_overlay_data->frustum_instances.empty());
+
+        auto* const trainer_manager = viewer.getTrainerManager();
+        trainer_manager->setScene(&scene);
+        trainer_manager->setTrainer(std::make_unique<lfs::training::Trainer>(scene));
+        for (const auto [show_crop, show_ellipsoid] : {std::pair{true, false}, std::pair{false, true},
+                                                       std::pair{true, true}, std::pair{false, false}}) {
+            SCOPED_TRACE(std::format("cropbox={} ellipsoid={}", show_crop, show_ellipsoid));
+            // Selecting the parent hides its crop children; enable this guide case explicitly.
+            scene.setNodeVisibility(crop, show_crop);
+            scene.setNodeVisibility(ellipsoid, show_ellipsoid);
+            settings.show_crop_box = show_crop;
+            settings.show_ellipsoid = show_ellipsoid;
+            rendering->updateSettings(settings);
+            rendering->setCropboxGizmoState(show_crop, glm::vec3(-0.5f), glm::vec3(0.5f), glm::mat4(1.0f), false, -1);
+            rendering->setEllipsoidGizmoState(show_ellipsoid, glm::vec3(0.75f), glm::mat4(1.0f), false, -1);
+            ASSERT_EQ(rendering->getGizmoState().cropbox_active, show_crop);
+            ASSERT_EQ(rendering->getGizmoState().ellipsoid_active, show_ellipsoid);
+            ASSERT_EQ(scene.isNodeEffectivelyVisible(crop), show_crop);
+            ASSERT_EQ(scene.isNodeEffectivelyVisible(ellipsoid), show_ellipsoid);
+            const auto before = gui->buildVulkanViewportParams(extent, 0);
+            ASSERT_NE(before.frustum_overlay_data, nullptr);
+            ASSERT_FALSE(before.frustum_overlay_data->frustum_instances.empty());
+            if (show_crop || show_ellipsoid) {
+                ASSERT_GT(before.shape_overlay_triangles.size(), independent.shape_overlay_triangles.size());
+            }
+
+            std::barrier phase(2);
+            std::jthread writer([&] {
+                std::unique_lock lock(trainer_manager->getTrainer()->getRenderMutex());
+                phase.arrive_and_wait();
+                phase.arrive_and_wait();
+            });
+            phase.arrive_and_wait();
+            const auto contended = gui->buildVulkanViewportParams(extent, 0);
+            phase.arrive_and_wait();
+            writer.join();
+            // No reselection or gizmo reset: the very next call must recover.
+            const auto recovered = gui->buildVulkanViewportParams(extent, 0);
+
+            EXPECT_EQ(contended.frustum_overlay_data, nullptr);
+            EXPECT_TRUE(contended.frustum_instances.empty());
+            EXPECT_TRUE(contended.frustum_batches.empty());
+            EXPECT_EQ(contended.shape_overlay_triangles.size(), independent.shape_overlay_triangles.size());
+            EXPECT_EQ(contended.grid_overlays.size(), independent.grid_overlays.size());
+            EXPECT_EQ(contended.pivot_overlays.size(), independent.pivot_overlays.size());
+            EXPECT_EQ(contended.ui_shape_overlay_triangles.size(), independent.ui_shape_overlay_triangles.size());
+            EXPECT_EQ(rendering->getGizmoState().cropbox_active, show_crop);
+            EXPECT_EQ(rendering->getGizmoState().ellipsoid_active, show_ellipsoid);
+            ASSERT_NE(recovered.frustum_overlay_data, nullptr);
+            EXPECT_EQ(recovered.frustum_overlay_data->frustum_instances.size(), before.frustum_overlay_data->frustum_instances.size());
+            EXPECT_EQ(recovered.shape_overlay_triangles.size(), before.shape_overlay_triangles.size());
+        }
     }
 
     TEST_F(VisualizerImplResetTest,
